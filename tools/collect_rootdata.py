@@ -112,10 +112,32 @@ def parse_date(text: str) -> str:
 # ── Selenium helpers ────────────────────────────────────────────────────────────
 
 def _make_driver() -> webdriver.Chrome:
-    from selenium.webdriver.chrome.service import Service
+    chrome_bin = os.environ.get("CHROME_BIN")
+    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
 
+    # Prefer undetected-chromedriver — bypasses Cloudflare/bot detection that blocks headless Selenium
+    try:
+        import undetected_chromedriver as uc  # pip install undetected-chromedriver
+        opts = uc.ChromeOptions()
+        opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--window-size=1920,1080")
+        if chrome_bin:
+            opts.binary_location = chrome_bin
+        kwargs = {"options": opts, "use_subprocess": True}
+        if chromedriver_path:
+            kwargs["driver_executable_path"] = chromedriver_path
+        print("  Using undetected-chromedriver (bot-detection bypass)")
+        return uc.Chrome(**kwargs)
+    except ImportError:
+        print("  WARNING: undetected-chromedriver not installed — RootData may block the request.")
+        print("  Fix: pip install undetected-chromedriver")
+
+    # Fallback: regular Selenium with stealth patches
+    from selenium.webdriver.chrome.service import Service
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--headless=new")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1920,1080")
@@ -126,18 +148,39 @@ def _make_driver() -> webdriver.Chrome:
         "user-agent=Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
     )
-
-    # Use Chromium binary/driver if set (Docker/Railway deployment)
-    chrome_bin = os.environ.get("CHROME_BIN")
-    chromedriver_path = os.environ.get("CHROMEDRIVER_PATH")
-
     if chrome_bin:
         options.binary_location = chrome_bin
 
-    if chromedriver_path:
-        return webdriver.Chrome(service=Service(chromedriver_path), options=options)
+    driver = (
+        webdriver.Chrome(service=Service(chromedriver_path), options=options)
+        if chromedriver_path
+        else webdriver.Chrome(options=options)
+    )
+    # Patch navigator.webdriver to hide automation flag
+    driver.execute_cdp_cmd(
+        "Page.addScriptToEvaluateOnNewDocument",
+        {"source": "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"},
+    )
+    return driver
 
-    return webdriver.Chrome(options=options)
+
+def _strip_avatar(text: str) -> str:
+    """
+    Clean RootData name cells that contain avatar + name [+ ticker] separated by newlines.
+    'C\nCharms\nCHARMS' → 'Charms'   (strip 1-2 char avatar, keep first real word, drop ticker)
+    'G\nGVFL'           → 'GVFL'
+    'OpenTrade'         → 'OpenTrade'
+    """
+    text = text.strip()
+    while "\n" in text:
+        before, after = text.split("\n", 1)
+        before, after = before.strip(), after.strip()
+        if len(before) <= 2:
+            text = after      # avatar prefix — discard and continue
+        else:
+            text = before     # real name found — stop (discard ticker on remaining lines)
+            break
+    return text
 
 
 def _wait_for_rows(driver: webdriver.Chrome, timeout: int = 20) -> list:
@@ -316,14 +359,17 @@ def extract_row(row) -> dict | None:
         company_url = ""
         try:
             a = cells[0].find_element(By.TAG_NAME, "a")
-            company = _safe_text(a) or _safe_text(cells[0])
+            company = _strip_avatar(_safe_text(a))
+            if len(company) <= 2:
+                company = _strip_avatar(_safe_text(cells[0]))
             href = _safe_attr(a, "href")
-            if href and "/Projects/detail/" in href:
-                # Store just the path portion
+            if href and href.startswith("http"):
                 from urllib.parse import urlparse
                 company_url = urlparse(href).path + ("?" + urlparse(href).query if urlparse(href).query else "")
+            elif href and href.startswith("/"):
+                company_url = href
         except NoSuchElementException:
-            company = _safe_text(cells[0])
+            company = _strip_avatar(_safe_text(cells[0]))
 
         if not company:
             return None
@@ -354,11 +400,17 @@ def extract_row(row) -> dict | None:
         if len(cells) > 6:
             inv_links = cells[6].find_elements(By.TAG_NAME, "a")
             if inv_links:
-                investors = [_safe_text(a) for a in inv_links if _safe_text(a)]
+                for a in inv_links:
+                    name = _strip_avatar(_safe_text(a))
+                    if name and len(name) > 1:
+                        investors.append(name)
             else:
                 raw = _safe_text(cells[6])
                 if raw and raw != "--":
-                    investors = [v.strip() for v in raw.split(",") if v.strip()]
+                    investors = [
+                        _strip_avatar(v) for v in raw.split(",")
+                        if _strip_avatar(v) and len(_strip_avatar(v)) > 1
+                    ]
 
         return {
             "date": date,
@@ -451,9 +503,17 @@ def collect_rootdata(
     try:
         print(f"Opening {BASE_URL}...")
         driver.get(BASE_URL)
-        # Wait for table rows to appear instead of sleeping blindly
         print("  Waiting for page to render...")
         _wait_for_rows(driver, timeout=20)
+
+        # Detect bot-block: Cloudflare challenge or empty page
+        title = driver.title.lower()
+        if "just a moment" in title or "attention required" in title or "cloudflare" in title:
+            driver.quit()
+            raise RuntimeError(
+                "RootData returned a Cloudflare challenge page.\n"
+                "Fix: pip install undetected-chromedriver  (if not already installed)"
+            )
 
         # Apply filters
         filters_applied = apply_filters(driver, start_date, end_date, min_amount)

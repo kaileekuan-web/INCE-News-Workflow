@@ -1,0 +1,4 @@
+1. for fundraising news, increment the start date day by day to get the full news - I’ve tried start and end dates and what happens is the model misses news.
+2. update AI and Deep Tech fundraising table to include - “valuation”: company post-money valuation (e.g. “100M”, “1.2B”, or “N/A” if unknown) after “raise”
+3. Some of the news in AI News table are fundraising news - I want to detect those and move them to the fundraising table instead (removed from main news table)
+4. Update Deep Tech news to organize the news into different categories including: 半导体 (including semiconductors, chips), 机器人, 新能源 （including new energy and EVs），其他
