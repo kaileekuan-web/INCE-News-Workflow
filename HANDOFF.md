@@ -167,7 +167,7 @@ The app is currently live on Railway under the previous intern's account. You ca
 python webapp/app.py
 # Open http://localhost:5001 in your browser
 ```
-This runs the full app on your own machine. Good for development and testing. Requires all API keys in `.env` and Gmail OAuth set up locally (see Sections 6 and 7). The app will stop when you close your terminal.
+This runs the full app on your own machine. Good for development and testing. First-time setup: clone the repo and install dependencies (see [Section 5 — Getting the Code](#5-setup--installation)). Requires all API keys in `.env` and Gmail OAuth set up locally (see Sections 6 and 7). The app will stop when you close your terminal.
 
 **Option 3: Deploy your own Railway instance**
 See [Section 8](#8-deployment-on-railway) for full instructions. This gives you a persistent public URL that anyone on the team can use. You'll need to create a free Railway account, connect the git repo, and copy all environment variables from the previous intern before their app goes offline.
@@ -222,11 +222,21 @@ When the job finishes, a **Download** button appears. Click it to save the `.doc
 - Google Chrome (required for the Crypto pipeline — used by Selenium)
 - A terminal / command line
 
+### Getting the Code
+
+```bash
+# Clone the repository
+git clone https://github.com/ychen945/INCE-News-Workflow.git
+cd INCE-News-Workflow
+```
+
+If you don't have git installed, download it from [git-scm.com](https://git-scm.com) first. You'll also need access to the GitHub repo — ask the previous intern or INCE team lead to add you as a collaborator.
+
 ### Local Setup
 
 ```bash
-# 1. Clone the repo (or copy the project folder)
-cd "path/to/AI Update"
+# 1. Enter the project folder (if you just cloned, you're already here)
+cd INCE-News-Workflow
 
 # 2. Create and activate a virtual environment
 python -m venv venv
