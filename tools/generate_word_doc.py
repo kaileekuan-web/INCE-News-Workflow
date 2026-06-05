@@ -646,10 +646,10 @@ def classify_deeptech_article(article: dict) -> str:
     return "其他"
 
 
-def _add_deeptech_header_row(table, label: str, fill_hex: str):
+def _add_deeptech_header_row(table, label: str, fill_hex: str, ncols: int = 2):
     """Add a full-width merged header row for category sections."""
     row = table.add_row()
-    row.cells[0].merge(row.cells[1])
+    row.cells[0].merge(row.cells[ncols - 1])
     cell = row.cells[0]
 
     tc = cell._tc
@@ -780,8 +780,18 @@ def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
         add_formatted_text(body, summary_text, font_size=10)
 
 
+_PRIORITY_COLORS = {
+    5: RGBColor(31, 73, 125),   # dark blue
+    4: RGBColor(68, 114, 196),  # medium blue
+    3: RGBColor(89, 89, 89),    # dark gray
+    2: RGBColor(128, 128, 128), # gray
+    1: RGBColor(166, 166, 166), # light gray
+}
+
+
 def _add_article_row(table, article: dict, translate: bool, claude_key: str,
-                     chinese_only: bool, idx: int, total: int):
+                     chinese_only: bool, idx: int, total: int,
+                     show_priority: bool = False):
     """Write one article as a table row. Shared by flat and grouped layouts."""
     if translate:
         print(f"  [{idx+1}/{total}] Translating...")
@@ -793,13 +803,24 @@ def _add_article_row(table, article: dict, translate: bool, claude_key: str,
     date_run = date_para.add_run(format_date_for_display(article.get('published_at', '')))
     set_run_font(date_run, font_size=9)
 
-    _fill_summary_cell(row_cells[1], article, translate, claude_key, chinese_only)
+    if show_priority:
+        relevance = article.get('relevance', 3)
+        p_para = row_cells[1].paragraphs[0]
+        p_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_para.paragraph_format.space_before = Pt(4)
+        p_run = p_para.add_run(str(relevance))
+        p_run.bold = True
+        set_run_font(p_run, font_size=13)
+        p_run.font.color.rgb = _PRIORITY_COLORS.get(relevance, RGBColor(89, 89, 89))
+        _fill_summary_cell(row_cells[2], article, translate, claude_key, chinese_only)
+    else:
+        _fill_summary_cell(row_cells[1], article, translate, claude_key, chinese_only)
 
 
 def create_news_table(doc: Document, articles: list, max_articles: int = None,
                       translate: bool = False, claude_key: str = None,
                       chinese_only: bool = False):
-    """Create AI News table. Groups by category + relevance if articles are categorized."""
+    """Create AI News table. Groups by category + shows priority column when articles are categorized."""
     if max_articles:
         articles = articles[:max_articles]
 
@@ -808,25 +829,43 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None,
     _set_para_font(heading)
     doc.add_paragraph(f'Total: {len(articles)} articles\n')
 
-    table = doc.add_table(rows=1, cols=2)
-    table.style = 'Light Grid Accent 1'
-    table.columns[0].width = Inches(0.85)
-    table.columns[1].width = Inches(5.65)
-    _set_table_cell_margins(table)
-
-    header_cells = table.rows[0].cells
-    header_cells[0].text = 'Date'
-    header_cells[1].text = 'Summary'
-    for cell in header_cells:
-        for paragraph in cell.paragraphs:
-            for run in paragraph.runs:
-                run.bold = True
-                set_run_font(run, font_size=10)
-
     is_categorized = any('category' in a for a in articles)
 
     if is_categorized:
-        # Group by category; within each group sort by relevance desc then date asc
+        # 3-column table: Date | 优先级 | Summary
+        table = doc.add_table(rows=1, cols=3)
+        table.style = 'Light Grid Accent 1'
+        table.columns[0].width = Inches(0.75)
+        table.columns[1].width = Inches(0.45)
+        table.columns[2].width = Inches(5.3)
+        _set_table_cell_margins(table)
+
+        hdr = table.rows[0].cells
+        for i, txt in enumerate(['日期', '优先级', '摘要']):
+            hdr[i].text = txt
+            for run in hdr[i].paragraphs[0].runs:
+                run.bold = True
+                set_run_font(run, font_size=10)
+            if i == 1:
+                hdr[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+    else:
+        # 2-column flat table: Date | Summary
+        table = doc.add_table(rows=1, cols=2)
+        table.style = 'Light Grid Accent 1'
+        table.columns[0].width = Inches(0.85)
+        table.columns[1].width = Inches(5.65)
+        _set_table_cell_margins(table)
+
+        hdr = table.rows[0].cells
+        hdr[0].text = 'Date'
+        hdr[1].text = 'Summary'
+        for cell in hdr:
+            for para in cell.paragraphs:
+                for run in para.runs:
+                    run.bold = True
+                    set_run_font(run, font_size=10)
+
+    if is_categorized:
         groups: dict = {cat: [] for cat in AI_NEWS_CATEGORY_ORDER}
         for article in articles:
             cat = article.get('category', '其他')
@@ -840,17 +879,16 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None,
             if not cat_articles:
                 continue
             cat_articles.sort(key=lambda x: (-x.get('relevance', 3), x.get('published_at', '')))
-            _add_deeptech_header_row(table, cat, AI_NEWS_CATEGORY_COLORS[cat])
+            _add_deeptech_header_row(table, cat, AI_NEWS_CATEGORY_COLORS[cat], ncols=3)
             for article in cat_articles:
                 _add_article_row(table, article, translate, claude_key, chinese_only,
-                                 idx, len(articles))
+                                 idx, len(articles), show_priority=True)
                 idx += 1
     else:
-        # Flat chronological list (backward compatible)
         articles.sort(key=lambda x: x.get('published_at', ''))
         for i, article in enumerate(articles):
             _add_article_row(table, article, translate, claude_key, chinese_only,
-                             i, len(articles))
+                             i, len(articles), show_priority=False)
 
     return table
 
