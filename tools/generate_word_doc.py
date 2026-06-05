@@ -70,6 +70,42 @@ def _set_para_font(para):
             if attr in rFonts.attrib:
                 del rFonts.attrib[attr]
 
+def _set_table_cell_margins(table, top: int = 80, bottom: int = 80,
+                             left: int = 100, right: int = 100):
+    """Set uniform cell padding (twips) on all cells in a table."""
+    tbl = table._tbl
+    tblPr = tbl.find(qn('w:tblPr'))
+    if tblPr is None:
+        tblPr = OxmlElement('w:tblPr')
+        tbl.insert(0, tblPr)
+    existing = tblPr.find(qn('w:tblCellMar'))
+    if existing is not None:
+        tblPr.remove(existing)
+    tblCellMar = OxmlElement('w:tblCellMar')
+    for side, val in [('top', top), ('bottom', bottom), ('left', left), ('right', right)]:
+        node = OxmlElement(f'w:{side}')
+        node.set(qn('w:w'), str(val))
+        node.set(qn('w:type'), 'dxa')
+        tblCellMar.append(node)
+    tblPr.append(tblCellMar)
+
+
+def _add_horizontal_rule(doc: Document, color: str = '4472C4'):
+    """Add a thin paragraph-border line as a visual section divider."""
+    para = doc.add_paragraph()
+    para.paragraph_format.space_before = Pt(2)
+    para.paragraph_format.space_after = Pt(8)
+    pPr = para._p.get_or_add_pPr()
+    pBdr = OxmlElement('w:pBdr')
+    bottom = OxmlElement('w:bottom')
+    bottom.set(qn('w:val'), 'single')
+    bottom.set(qn('w:sz'), '6')
+    bottom.set(qn('w:space'), '1')
+    bottom.set(qn('w:color'), color)
+    pBdr.append(bottom)
+    pPr.append(pBdr)
+
+
 try:
     import requests
 except ImportError:
@@ -472,10 +508,10 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
     table = doc.add_table(rows=1, cols=7)
     table.style = 'Light Grid Accent 1'
 
-    # Set column widths
-    col_widths = [Inches(0.85), Inches(1.0), Inches(2.0), Inches(0.65), Inches(0.65), Inches(0.75), Inches(1.3)]
+    col_widths = [Inches(0.65), Inches(0.85), Inches(1.75), Inches(0.55), Inches(0.6), Inches(0.6), Inches(1.5)]
     for i, width in enumerate(col_widths):
         table.columns[i].width = width
+    _set_table_cell_margins(table)
 
     # Header row (Chinese)
     headers = ['日期', '公司', '概述', '轮次', '融资额', '估值', '投资方']
@@ -611,21 +647,34 @@ def classify_deeptech_article(article: dict) -> str:
 
 
 def _add_deeptech_header_row(table, label: str, fill_hex: str):
-    """Add a full-width merged header row for deeptech category sections."""
+    """Add a full-width merged header row for category sections."""
     row = table.add_row()
     row.cells[0].merge(row.cells[1])
     cell = row.cells[0]
 
     tc = cell._tc
     tcPr = tc.get_or_add_tcPr()
+
     shd = OxmlElement('w:shd')
     shd.set(qn('w:val'), 'clear')
     shd.set(qn('w:color'), 'auto')
     shd.set(qn('w:fill'), fill_hex)
     tcPr.append(shd)
 
+    # Left accent border
+    tcBdr = OxmlElement('w:tcBdr')
+    left_bdr = OxmlElement('w:left')
+    left_bdr.set(qn('w:val'), 'single')
+    left_bdr.set(qn('w:sz'), '18')
+    left_bdr.set(qn('w:space'), '0')
+    left_bdr.set(qn('w:color'), '1F497D')
+    tcBdr.append(left_bdr)
+    tcPr.append(tcBdr)
+
     para = cell.paragraphs[0]
     para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    para.paragraph_format.space_before = Pt(3)
+    para.paragraph_format.space_after = Pt(3)
     run = para.add_run(label)
     run.bold = True
     set_run_font(run, font_size=11)
@@ -657,8 +706,9 @@ def create_grouped_deeptech_table(
 
     table = doc.add_table(rows=1, cols=2)
     table.style = 'Light Grid Accent 1'
-    table.columns[0].width = Inches(1.0)
-    table.columns[1].width = Inches(6.0)
+    table.columns[0].width = Inches(0.85)
+    table.columns[1].width = Inches(5.65)
+    _set_table_cell_margins(table)
 
     hdr = table.rows[0].cells
     hdr[0].text = 'Date'
@@ -667,7 +717,7 @@ def create_grouped_deeptech_table(
         for para in cell.paragraphs:
             for run in para.runs:
                 run.bold = True
-                set_run_font(run, font_size=12)
+                set_run_font(run, font_size=10)
 
     for cat in DEEPTECH_CATEGORY_ORDER:
         cat_articles = groups[cat]
@@ -679,36 +729,55 @@ def create_grouped_deeptech_table(
         for article in cat_articles:
             row_cells = table.add_row().cells
 
-            date_str = format_date_for_display(article.get('published_at', ''))
-            set_run_font(row_cells[0].paragraphs[0].add_run(date_str), font_size=10)
+            date_para = row_cells[0].paragraphs[0]
+            date_para.paragraph_format.space_before = Pt(4)
+            set_run_font(date_para.add_run(format_date_for_display(article.get('published_at', ''))), font_size=9)
 
-            summary_para = row_cells[1].paragraphs[0]
-            title = article.get('title', 'No title')
-            url = article.get('url', '')
-            if url:
-                add_hyperlink(summary_para, url, title, font_size=10)
-            else:
-                run = summary_para.add_run(title)
-                run.bold = True
-                set_run_font(run, font_size=10)
-
-            summary = article.get('summary', article.get('description', ''))
-            summary_text = convert_bullets_to_paragraph(summary)
-            summary_para.add_run('\n\n')
-
-            if chinese_only:
-                add_formatted_text(summary_para, summary_text, font_size=10)
-            elif translate and claude_key:
-                chinese = translate_to_chinese_claude(claude_key, summary_text)
-                if chinese:
-                    add_formatted_text(summary_para, chinese, font_size=10)
-                    time.sleep(0.3)
-                summary_para.add_run('\n\n')
-                add_formatted_text(summary_para, summary_text, font_size=10)
-            else:
-                add_formatted_text(summary_para, summary_text, font_size=10)
+            _fill_summary_cell(row_cells[1], article, translate, claude_key, chinese_only)
 
     return table
+
+
+def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
+                        chinese_only: bool):
+    """Fill the summary cell: hyperlinked title + body paragraph(s) with proper spacing."""
+    title = article.get('title', 'No title')
+    url = article.get('url', '')
+
+    title_para = cell.paragraphs[0]
+    title_para.paragraph_format.space_after = Pt(3)
+    if url:
+        add_hyperlink(title_para, url, title, font_size=10)
+    else:
+        run = title_para.add_run(title)
+        run.bold = True
+        set_run_font(run, font_size=10)
+
+    summary = article.get('summary', article.get('description', 'No summary available'))
+    summary_text = convert_bullets_to_paragraph(summary)
+
+    if chinese_only:
+        body = cell.add_paragraph()
+        body.paragraph_format.space_before = Pt(0)
+        body.paragraph_format.space_after = Pt(4)
+        add_formatted_text(body, summary_text, font_size=10)
+    elif translate and claude_key:
+        chinese = translate_to_chinese_claude(claude_key, summary_text)
+        if chinese:
+            cn_para = cell.add_paragraph()
+            cn_para.paragraph_format.space_before = Pt(0)
+            cn_para.paragraph_format.space_after = Pt(3)
+            add_formatted_text(cn_para, chinese, font_size=10)
+            time.sleep(0.5)
+        en_para = cell.add_paragraph()
+        en_para.paragraph_format.space_before = Pt(0)
+        en_para.paragraph_format.space_after = Pt(4)
+        add_formatted_text(en_para, summary_text, font_size=10)
+    else:
+        body = cell.add_paragraph()
+        body.paragraph_format.space_before = Pt(0)
+        body.paragraph_format.space_after = Pt(4)
+        add_formatted_text(body, summary_text, font_size=10)
 
 
 def _add_article_row(table, article: dict, translate: bool, claude_key: str,
@@ -719,37 +788,12 @@ def _add_article_row(table, article: dict, translate: bool, claude_key: str,
 
     row_cells = table.add_row().cells
 
-    date_str = format_date_for_display(article.get('published_at', ''))
-    date_run = row_cells[0].paragraphs[0].add_run(date_str)
-    set_run_font(date_run, font_size=10)
+    date_para = row_cells[0].paragraphs[0]
+    date_para.paragraph_format.space_before = Pt(4)
+    date_run = date_para.add_run(format_date_for_display(article.get('published_at', '')))
+    set_run_font(date_run, font_size=9)
 
-    summary_para = row_cells[1].paragraphs[0]
-    title = article.get('title', 'No title')
-    url = article.get('url', '')
-    if url:
-        add_hyperlink(summary_para, url, title, font_size=10)
-    else:
-        run = summary_para.add_run(title)
-        run.bold = True
-        set_run_font(run, font_size=10)
-
-    summary = article.get('summary', article.get('description', 'No summary available'))
-    summary_paragraph = convert_bullets_to_paragraph(summary)
-
-    if chinese_only:
-        summary_para.add_run("\n\n")
-        add_formatted_text(summary_para, summary_paragraph, font_size=10)
-    elif translate and claude_key:
-        chinese = translate_to_chinese_claude(claude_key, summary_paragraph)
-        if chinese:
-            summary_para.add_run("\n\n")
-            add_formatted_text(summary_para, chinese, font_size=10)
-            time.sleep(0.5)
-        summary_para.add_run("\n\n")
-        add_formatted_text(summary_para, summary_paragraph, font_size=10)
-    else:
-        summary_para.add_run("\n\n")
-        add_formatted_text(summary_para, summary_paragraph, font_size=10)
+    _fill_summary_cell(row_cells[1], article, translate, claude_key, chinese_only)
 
 
 def create_news_table(doc: Document, articles: list, max_articles: int = None,
@@ -766,8 +810,9 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None,
 
     table = doc.add_table(rows=1, cols=2)
     table.style = 'Light Grid Accent 1'
-    table.columns[0].width = Inches(1.0)
-    table.columns[1].width = Inches(6.0)
+    table.columns[0].width = Inches(0.85)
+    table.columns[1].width = Inches(5.65)
+    _set_table_cell_margins(table)
 
     header_cells = table.rows[0].cells
     header_cells[0].text = 'Date'
@@ -776,7 +821,7 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None,
         for paragraph in cell.paragraphs:
             for run in paragraph.runs:
                 run.bold = True
-                set_run_font(run, font_size=12)
+                set_run_font(run, font_size=10)
 
     is_categorized = any('category' in a for a in articles)
 
@@ -862,10 +907,18 @@ def generate_word_doc(start_date: str, end_date: str,
     print("Creating Word document...")
     doc = Document()
 
+    # Set 1" margins — gives 6.5" content width on letter paper
+    section = doc.sections[0]
+    section.left_margin = Inches(1.0)
+    section.right_margin = Inches(1.0)
+    section.top_margin = Inches(1.0)
+    section.bottom_margin = Inches(1.0)
+
     # Title
     display_title = doc_title if doc_title else 'AI News Report'
     title = doc.add_heading(display_title, level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _set_para_font(title)
 
     # Subtitle with date range
     subtitle = doc.add_paragraph(f'{start_date} to {end_date}')
@@ -874,10 +927,17 @@ def generate_word_doc(start_date: str, end_date: str,
         set_run_font(run, font_size=14)
         run.font.color.rgb = RGBColor(128, 128, 128)
 
-    # Metadata
-    doc.add_paragraph(f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}')
-    doc.add_paragraph(f'Total Articles Collected: {len(articles)}')
-    doc.add_paragraph('')
+    # Compact metadata line
+    meta_para = doc.add_paragraph()
+    meta_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    meta_run = meta_para.add_run(
+        f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}  ·  '
+        f'Total Articles: {len(articles)}'
+    )
+    set_run_font(meta_run, font_size=9)
+    meta_run.font.color.rgb = RGBColor(140, 140, 140)
+
+    _add_horizontal_rule(doc)
 
     # Create news table (grouped for deeptech, flat for others)
     print("Creating news table...")
