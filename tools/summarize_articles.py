@@ -678,9 +678,10 @@ def main():
     parser.add_argument('--consumer', action='store_true',
                         help='Consumer mode: classify articles into 行业动态/融资新闻 and generate '
                              'category-appropriate Chinese summaries (Claude only)')
-    parser.add_argument('--categorize', action='store_true',
-                        help='AI news mode: classify into 6 categories, score relevance 1-5, '
-                             'and generate Chinese summary in one call (Claude only)')
+    parser.add_argument('--no-categorize', dest='categorize', action='store_false',
+                        help='Disable AI news categorization (on by default). '
+                             'Categorization classifies into 6 categories and scores relevance 1-5.')
+    parser.set_defaults(categorize=True)
     args = parser.parse_args()
 
     summarize_articles(args.input, args.output, args.max, args.skip_fetch, args.provider,
