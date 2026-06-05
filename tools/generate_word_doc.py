@@ -456,6 +456,19 @@ def convert_bullets_to_paragraph(text: str) -> str:
     return ' '.join(cleaned_lines)
 
 
+# ── AI news category grouping ──────────────────────────────────────────────────
+
+AI_NEWS_CATEGORY_ORDER = ["模型与研究", "产品与应用", "大科技公司", "政策与安全", "行业动态", "其他"]
+
+AI_NEWS_CATEGORY_COLORS = {
+    "模型与研究": "DDEEFF",
+    "产品与应用": "FFF8E1",
+    "大科技公司": "E6F4EA",
+    "政策与安全": "FCE8E8",
+    "行业动态": "F3E5F5",
+    "其他":      "F5F5F5",
+}
+
 # ── Deeptech category grouping ─────────────────────────────────────────────────
 
 DEEPTECH_CATEGORY_ORDER = ["半导体", "机器人", "新能源", "其他"]
@@ -607,100 +620,101 @@ def create_grouped_deeptech_table(
     return table
 
 
-def create_news_table(doc: Document, articles: list, max_articles: int = None, translate: bool = False, claude_key: str = None, chinese_only: bool = False):
-    """
-    Create AI News table with 2 columns: Date | Title + Summary
+def _add_article_row(table, article: dict, translate: bool, claude_key: str,
+                     chinese_only: bool, idx: int, total: int):
+    """Write one article as a table row. Shared by flat and grouped layouts."""
+    if translate:
+        print(f"  [{idx+1}/{total}] Translating...")
 
-    Args:
-        doc: Document object
-        articles: List of articles with summaries
-        max_articles: Maximum number of articles to include (None = all)
-        translate: Whether to add Chinese translation
-        claude_key: Anthropic API key for translation
-    """
-    # Sort by date (oldest first)
-    articles.sort(key=lambda x: x.get('published_at', ''), reverse=False)
+    row_cells = table.add_row().cells
 
-    # Limit articles if specified
+    date_str = format_date_for_display(article.get('published_at', ''))
+    date_run = row_cells[0].paragraphs[0].add_run(date_str)
+    set_run_font(date_run, font_size=10)
+
+    summary_para = row_cells[1].paragraphs[0]
+    title = article.get('title', 'No title')
+    url = article.get('url', '')
+    if url:
+        add_hyperlink(summary_para, url, title, font_size=10)
+    else:
+        run = summary_para.add_run(title)
+        run.bold = True
+        set_run_font(run, font_size=10)
+
+    summary = article.get('summary', article.get('description', 'No summary available'))
+    summary_paragraph = convert_bullets_to_paragraph(summary)
+
+    if chinese_only:
+        summary_para.add_run("\n\n")
+        add_formatted_text(summary_para, summary_paragraph, font_size=10)
+    elif translate and claude_key:
+        chinese = translate_to_chinese_claude(claude_key, summary_paragraph)
+        if chinese:
+            summary_para.add_run("\n\n")
+            add_formatted_text(summary_para, chinese, font_size=10)
+            time.sleep(0.5)
+        summary_para.add_run("\n\n")
+        add_formatted_text(summary_para, summary_paragraph, font_size=10)
+    else:
+        summary_para.add_run("\n\n")
+        add_formatted_text(summary_para, summary_paragraph, font_size=10)
+
+
+def create_news_table(doc: Document, articles: list, max_articles: int = None,
+                      translate: bool = False, claude_key: str = None,
+                      chinese_only: bool = False):
+    """Create AI News table. Groups by category + relevance if articles are categorized."""
     if max_articles:
         articles = articles[:max_articles]
 
-    # Add heading
     heading = doc.add_heading('AI News Summary', level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
-
-    # Add count
+    _set_para_font(heading)
     doc.add_paragraph(f'Total: {len(articles)} articles\n')
 
-    # Create table with 2 columns
     table = doc.add_table(rows=1, cols=2)
     table.style = 'Light Grid Accent 1'
+    table.columns[0].width = Inches(1.0)
+    table.columns[1].width = Inches(6.0)
 
-    # Set column widths
-    table.columns[0].width = Inches(1.0)  # Date
-    table.columns[1].width = Inches(6.0)  # Title + Summary
-
-    # Header row
     header_cells = table.rows[0].cells
     header_cells[0].text = 'Date'
     header_cells[1].text = 'Summary'
-
-    # Format header
     for cell in header_cells:
         for paragraph in cell.paragraphs:
             for run in paragraph.runs:
                 run.bold = True
                 set_run_font(run, font_size=12)
 
-    # Add data rows
-    for i, article in enumerate(articles):
-        if translate:
-            print(f"  [{i+1}/{len(articles)}] Translating...")
+    is_categorized = any('category' in a for a in articles)
 
-        row_cells = table.add_row().cells
+    if is_categorized:
+        # Group by category; within each group sort by relevance desc then date asc
+        groups: dict = {cat: [] for cat in AI_NEWS_CATEGORY_ORDER}
+        for article in articles:
+            cat = article.get('category', '其他')
+            if cat not in groups:
+                cat = '其他'
+            groups[cat].append(article)
 
-        # Column 1: Date only
-        date_str = format_date_for_display(article.get('published_at', ''))
-        date_cell = row_cells[0]
-        date_para = date_cell.paragraphs[0]
-        date_run = date_para.add_run(date_str)
-        set_run_font(date_run, font_size=10)
-
-        # Column 2: Title (hyperlinked) + Summary
-        summary_cell = row_cells[1]
-        summary_para = summary_cell.paragraphs[0]
-
-        # Add hyperlinked title
-        title = article.get('title', 'No title')
-        url = article.get('url', '')
-        if url:
-            add_hyperlink(summary_para, url, title, font_size=10)
-        else:
-            run = summary_para.add_run(title)
-            run.bold = True
-            set_run_font(run, font_size=10)
-
-        # Get summary and convert bullets to paragraph
-        summary = article.get('summary', article.get('description', 'No summary available'))
-        summary_paragraph = convert_bullets_to_paragraph(summary)
-
-        if chinese_only:
-            # Use summary as-is (already in Chinese from --language zh summarization)
-            summary_para.add_run("\n\n")
-            add_formatted_text(summary_para, summary_paragraph, font_size=10)
-        elif translate and claude_key:
-            # Add Chinese translation first, then English
-            chinese = translate_to_chinese_claude(claude_key, summary_paragraph)
-            if chinese:
-                summary_para.add_run("\n\n")
-                add_formatted_text(summary_para, chinese, font_size=10)
-                time.sleep(0.5)  # Rate limiting for Claude
-            summary_para.add_run("\n\n")
-            add_formatted_text(summary_para, summary_paragraph, font_size=10)
-        else:
-            # English only
-            summary_para.add_run("\n\n")
-            add_formatted_text(summary_para, summary_paragraph, font_size=10)
+        idx = 0
+        for cat in AI_NEWS_CATEGORY_ORDER:
+            cat_articles = groups[cat]
+            if not cat_articles:
+                continue
+            cat_articles.sort(key=lambda x: (-x.get('relevance', 3), x.get('published_at', '')))
+            _add_deeptech_header_row(table, cat, AI_NEWS_CATEGORY_COLORS[cat])
+            for article in cat_articles:
+                _add_article_row(table, article, translate, claude_key, chinese_only,
+                                 idx, len(articles))
+                idx += 1
+    else:
+        # Flat chronological list (backward compatible)
+        articles.sort(key=lambda x: x.get('published_at', ''))
+        for i, article in enumerate(articles):
+            _add_article_row(table, article, translate, claude_key, chinese_only,
+                             i, len(articles))
 
     return table
 

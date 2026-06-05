@@ -140,6 +140,26 @@ SUMMARY_PROMPT_ZH = (
     "只输出中文摘要段落，不需要标题或其他说明。"
 )
 
+# AI news mode: classify + score + Chinese summary in one call, returns JSON
+SUMMARY_PROMPT_AI = (
+    "你是一位AI行业分析师。请分析以下文章，用JSON格式返回三项内容：\n\n"
+    "1. category（类别）— 选择以下之一：\n"
+    "   \"模型与研究\"：新模型发布、研究论文、技术突破、基准测试\n"
+    "   \"产品与应用\"：新产品功能、应用场景、用户工具\n"
+    "   \"大科技公司\"：Google、Apple、Meta、Microsoft、Amazon、NVIDIA、xAI等大型科技公司动态\n"
+    "   \"政策与安全\"：AI监管、安全研究、伦理讨论、政府政策\n"
+    "   \"行业动态\"：公司战略、合作、市场趋势、商业新闻\n"
+    "   \"其他\"：不属于以上类别\n\n"
+    "2. relevance（重要性评分，1-5整数）：\n"
+    "   5=重大突破或行业里程碑，4=重要发展行业人士必读，"
+    "3=有价值值得关注，2=一般影响有限，1=低重要性\n\n"
+    "3. summary（中文摘要）：2-4句自然段，涵盖发生了什么、涉及方、为何重要。"
+    "直接从事实开始，不用「本文报道」等引导语。\n\n"
+    "仅返回JSON，不含其他文字：\n"
+    "{{\"category\": \"模型与研究\", \"relevance\": 4, \"summary\": \"...\"}}\n\n"
+    "文章内容：\n{text}"
+)
+
 # Consumer mode: classify + summarize in one call, returns JSON
 SUMMARY_PROMPT_CONSUMER = """你是一位消费科技行业分析师。请分析以下文章，完成两项任务：
 
@@ -160,8 +180,11 @@ SUMMARY_PROMPT_CONSUMER = """你是一位消费科技行业分析师。请分析
 {text}"""
 
 
-def get_summary_prompt(text: str, language: str = 'en', consumer: bool = False) -> str:
+def get_summary_prompt(text: str, language: str = 'en', consumer: bool = False,
+                       categorize: bool = False) -> str:
     """Return the summarization prompt for the given language/mode."""
+    if categorize:
+        return SUMMARY_PROMPT_AI.format(text=text)
     if consumer:
         return SUMMARY_PROMPT_CONSUMER.format(text=text)
     template = SUMMARY_PROMPT_ZH if language == 'zh' else SUMMARY_PROMPT_EN
@@ -267,12 +290,14 @@ def generate_summary_openai(client, title: str, description: str, content: str, 
 
 
 def generate_summary_claude(api_key: str, title: str, description: str, content: str,
-                            language: str = 'en', consumer: bool = False) -> dict:
+                            language: str = 'en', consumer: bool = False,
+                            categorize: bool = False) -> dict:
     """
     Generate summary using Claude API.
 
-    In consumer mode, returns a dict with 'category' and 'summary' keys.
-    Otherwise returns a dict with only 'summary'.
+    - Default: returns {'summary': str}
+    - consumer mode: returns {'category': str, 'summary': str}
+    - categorize mode: returns {'category': str, 'relevance': int, 'summary': str}
 
     Args:
         api_key: Anthropic API key
@@ -280,10 +305,8 @@ def generate_summary_claude(api_key: str, title: str, description: str, content:
         description: Article description
         content: Full article content
         language: Output language ('en' or 'zh')
-        consumer: Use consumer classification+summary mode
-
-    Returns:
-        Dict with 'summary' and optionally 'category'
+        consumer: Consumer classification+summary mode
+        categorize: AI news categorize+score+summary mode
     """
     if not content or len(content) < 100:
         text_to_summarize = f"{title}\n\n{description}"
@@ -307,7 +330,7 @@ def generate_summary_claude(api_key: str, title: str, description: str, content:
             "messages": [
                 {
                     "role": "user",
-                    "content": get_summary_prompt(text_to_summarize, language, consumer)
+                    "content": get_summary_prompt(text_to_summarize, language, consumer, categorize)
                 }
             ]
         }
@@ -352,6 +375,30 @@ def generate_summary_claude(api_key: str, title: str, description: str, content:
             except Exception:
                 print(f"  WARNING: Could not parse consumer response, defaulting to 行业动态")
                 return {'category': '行业动态', 'summary': fallback_summary}
+
+        if categorize:
+            try:
+                json_text = re.sub(r'^```(?:json)?\s*\n?|\n?```$', '', text.strip()).strip()
+
+                cat_match = re.search(r'"category"\s*:\s*"([^"]+)"', json_text)
+                rel_match = re.search(r'"relevance"\s*:\s*([1-5])', json_text)
+                sum_marker = '"summary": "'
+                sum_pos = json_text.find(sum_marker)
+
+                category = cat_match.group(1) if cat_match else '其他'
+                relevance = int(rel_match.group(1)) if rel_match else 3
+
+                if sum_pos != -1:
+                    summary_raw = json_text[sum_pos + len(sum_marker):]
+                    summary_text = re.sub(r'"\s*\}?\s*$', '', summary_raw).strip()
+                else:
+                    summary_text = fallback_summary
+
+                return {'category': category, 'relevance': relevance, 'summary': summary_text}
+
+            except Exception:
+                print(f"  WARNING: Could not parse categorize response, using defaults")
+                return {'category': '其他', 'relevance': 3, 'summary': fallback_summary}
 
         return {'summary': text}
 
@@ -414,7 +461,8 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
                       provider: str = 'claude',
                       skip_confirm: bool = False,
                       language: str = 'en',
-                      consumer: bool = False):
+                      consumer: bool = False,
+                      categorize: bool = False):
     """
     Main summarization function
 
@@ -535,7 +583,8 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
                 article.get('description', ''),
                 content,
                 language,
-                consumer
+                consumer,
+                categorize,
             )
             time.sleep(0.5)  # Small delay for Claude
         elif provider == 'gemini':
@@ -562,11 +611,15 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
             }
             time.sleep(0.3)  # Small delay for OpenAI
 
-        # Add summary (and category if consumer mode) to article
+        # Add summary (and category/relevance if applicable) to article
         article['summary'] = result.get('summary', '')
         if consumer and 'category' in result:
             article['category'] = result['category']
             print(f"  Category: {result['category']}")
+        if categorize and 'category' in result:
+            article['category'] = result['category']
+            article['relevance'] = result.get('relevance', 3)
+            print(f"  [{result.get('relevance', 3)}/5] {result['category']}")
         article['full_content_fetched'] = bool(content)
         summarized_articles.append(article)
 
@@ -600,10 +653,13 @@ def main():
     parser.add_argument('--consumer', action='store_true',
                         help='Consumer mode: classify articles into 行业动态/融资新闻 and generate '
                              'category-appropriate Chinese summaries (Claude only)')
+    parser.add_argument('--categorize', action='store_true',
+                        help='AI news mode: classify into 6 categories, score relevance 1-5, '
+                             'and generate Chinese summary in one call (Claude only)')
     args = parser.parse_args()
 
     summarize_articles(args.input, args.output, args.max, args.skip_fetch, args.provider,
-                       args.yes, args.language, args.consumer)
+                       args.yes, args.language, args.consumer, args.categorize)
 
 
 if __name__ == "__main__":
