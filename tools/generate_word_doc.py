@@ -304,15 +304,23 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
         current += timedelta(days=1)
         time.sleep(1.0)  # rate limiting between days
 
-    # Deduplicate by company + date
-    seen = set()
-    unique = []
+    # Deduplicate by company name only — same company rarely raises twice in one period.
+    # Keep the entry with the most complete information (fewest '不详' placeholders).
+    seen: dict = {}
     for e in all_events:
-        key = (e.get('company', '').lower().strip(), e.get('date', '')[:10])
-        if key not in seen:
-            seen.add(key)
-            unique.append(e)
+        company_key = e.get('company', '').lower().strip()
+        if not company_key:
+            continue
+        if company_key not in seen:
+            seen[company_key] = e
+        else:
+            existing = seen[company_key]
+            existing_score = sum(1 for v in existing.values() if str(v) not in ('不详', '', 'N/A'))
+            new_score = sum(1 for v in e.values() if str(v) not in ('不详', '', 'N/A'))
+            if new_score > existing_score:
+                seen[company_key] = e
 
+    unique = list(seen.values())
     print(f"  Total unique funding events: {len(unique)}")
     return unique
 
