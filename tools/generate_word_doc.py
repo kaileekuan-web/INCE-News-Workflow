@@ -226,7 +226,12 @@ def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
     if topic == 'deeptech':
         sector_desc = "深科技公司（包括机器人、先进材料、量子计算、生物/医疗科技、航天、半导体、清洁能源等硬科技领域）"
     else:
-        sector_desc = "AI / 人工智能公司"
+        sector_desc = (
+            "以AI/人工智能为核心技术的公司。"
+            "纳入范围：大语言模型、生成式AI、AI agent、计算机视觉、语音AI、AI基础设施、AI驱动的SaaS产品。"
+            "排除范围：传统数据存储、传统网络安全（非AI核心）、普通云计算、区块链/加密货币、"
+            "传统金融科技、以及仅将AI作为边缘功能的传统软件公司"
+        )
 
     prompt = f"""搜索网络，找出{date}宣布的{sector_desc}融资轮次、投资和收购事件。
 
@@ -291,8 +296,65 @@ def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
         return []
 
 
+def _filter_ai_funding_events(claude_key: str, events: list) -> list:
+    """
+    Use Claude to validate that each funding event is genuinely AI-focused.
+    Batches all companies in one API call to minimise cost.
+    Returns the filtered list.
+    """
+    if not events or not claude_key:
+        return events
+
+    companies = [
+        {"index": i, "company": e.get('company', ''), "summary": e.get('summary', '')}
+        for i, e in enumerate(events)
+    ]
+
+    prompt = (
+        "以下是一批融资新闻公司，请判断每家公司是否以AI/人工智能为核心业务。\n\n"
+        "判断标准：\n"
+        "- 是：公司的主要产品/服务以AI/ML为技术基础（大语言模型、生成式AI、AI agent、"
+        "计算机视觉、AI-native SaaS等）\n"
+        "- 否：AI只是次要功能，或公司属于传统数据存储、传统网络安全、"
+        "普通云基础设施、区块链/加密、传统金融科技\n\n"
+        f"公司列表：\n{json.dumps(companies, ensure_ascii=False)}\n\n"
+        "返回一个JSON数组，只包含确实是AI公司的index值。例如：[0, 2, 4]\n"
+        "只返回JSON数组，不含其他文字。"
+    )
+
+    try:
+        response = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 200,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            headers={
+                'Content-Type': 'application/json',
+                'x-api-key': claude_key,
+                'anthropic-version': '2023-06-01',
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        text = response.json()['content'][0]['text'].strip()
+        match = re.search(r'\[[\d,\s]*\]', text)
+        if match:
+            keep_indices = set(json.loads(match.group()))
+            filtered = [e for i, e in enumerate(events) if i in keep_indices]
+            removed = len(events) - len(filtered)
+            if removed:
+                print(f"  Validation removed {removed} non-AI company/companies")
+            return filtered
+    except Exception as e:
+        print(f"  WARNING: AI validation failed ({e}), keeping all events")
+
+    return events
+
+
 def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
-                               topic: str = 'ai') -> list:
+                               topic: str = 'ai', claude_key: str = None) -> list:
     """
     Use OpenAI with web search to find funding events in a date range.
     Searches day-by-day to avoid the model skipping dates in long ranges.
@@ -354,6 +416,12 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
 
     unique = list(seen.values())
     print(f"  Total unique funding events: {len(unique)}")
+
+    # For AI topic, validate each event is genuinely AI-focused
+    if topic == 'ai' and claude_key:
+        print(f"  Validating AI relevance...")
+        unique = _filter_ai_funding_events(claude_key, unique)
+
     return unique
 
 
@@ -798,7 +866,7 @@ def generate_word_doc(start_date: str, end_date: str,
     topic_label = "Deeptech" if funding_topic == "deeptech" else "AI"
     print(f"Searching for {topic_label} funding news with ChatGPT (live web search)...")
     if openai_key:
-        funding_events = extract_funding_with_openai(openai_key, start_date, end_date, funding_topic)
+        funding_events = extract_funding_with_openai(openai_key, start_date, end_date, funding_topic, claude_key)
         print(f"  Found {len(funding_events)} funding events")
         heading_map = {"AI": "AI 融资动态", "Deeptech": "深科技融资动态"}
         create_funding_table(doc, funding_events, heading=heading_map.get(topic_label, f"{topic_label} 融资动态"))

@@ -526,19 +526,37 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
         print(f"Processing only first {max_articles} articles")
         articles = articles[:max_articles]
 
-    # Estimate cost
+    # Resume from previous run — load already-summarized articles by URL
+    already_done: dict = {}
+    if os.path.exists(output_file):
+        try:
+            with open(output_file, 'r', encoding='utf-8') as f:
+                existing = json.load(f)
+            for a in existing:
+                url = a.get('url', '')
+                if url and a.get('summary'):
+                    already_done[url] = a
+            if already_done:
+                print(f"  Resuming: {len(already_done)} articles already summarized, skipping them")
+        except Exception:
+            print("  Could not load existing progress, starting fresh")
+
+    remaining = [a for a in articles if a.get('url', '') not in already_done]
+    print(f"  Articles to process: {len(remaining)} (skipping {len(already_done)} already done)")
+
+    # Estimate cost on remaining articles only
     if provider == 'claude':
-        estimated_cost = estimate_cost_claude(len(articles))
+        estimated_cost = estimate_cost_claude(len(remaining))
         print(f"\nEstimated cost: ${estimated_cost:.2f}")
     elif provider == 'gemini':
-        estimated_cost = estimate_cost_gemini(len(articles))
+        estimated_cost = estimate_cost_gemini(len(remaining))
         print(f"\nEstimated cost: $0.00 (FREE)")
         print(f"Rate limit: 15 requests/min, 1500/day")
-        if len(articles) > 1500:
-            print(f"WARNING: {len(articles)} articles exceeds daily limit of 1500")
+        if len(remaining) > 1500:
+            print(f"WARNING: {len(remaining)} articles exceeds daily limit of 1500")
             sys.exit(1)
     else:
-        estimated_cost = estimate_cost_openai(len(articles))
+        estimated_cost = estimate_cost_openai(len(remaining))
         print(f"\nEstimated cost: ${estimated_cost:.2f}")
 
     # Ask for confirmation if cost is high (paid providers)
@@ -548,13 +566,13 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
             print("Summarization cancelled")
             sys.exit(0)
 
-    # Process articles
-    print(f"\nProcessing {len(articles)} articles...")
-    summarized_articles = []
+    # Process articles — start with already-done ones so output file stays complete
+    print(f"\nProcessing {len(remaining)} articles...")
+    summarized_articles = list(already_done.values())
 
     skipped_count = 0
-    for i, article in enumerate(articles, 1):
-        print(f"[{i}/{len(articles)}] {article.get('title', 'Untitled')[:60]}...")
+    for i, article in enumerate(remaining, 1):
+        print(f"[{i}/{len(remaining)}] {article.get('title', 'Untitled')[:60]}...")
 
         url = article.get('url', '')
 
@@ -623,8 +641,12 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
         article['full_content_fetched'] = bool(content)
         summarized_articles.append(article)
 
+        # Save after every article so a crash doesn't lose progress
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(summarized_articles, f, ensure_ascii=False, indent=2)
+
         if len(summarized_articles) % 10 == 0:
-            print(f"  → Summarized {len(summarized_articles)}/{len(articles)} articles so far...")
+            print(f"  → Summarized {len(summarized_articles)} articles so far...")
 
     if skipped_count > 0:
         print(f"\n✓ Summarization complete ({len(summarized_articles)} articles, {skipped_count} X/Twitter links skipped)")
