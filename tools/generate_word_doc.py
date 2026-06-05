@@ -29,6 +29,24 @@ except ImportError:
     print("ERROR: python-docx not installed. Run: pip install python-docx")
     sys.exit(1)
 
+FONT_ENGLISH = "Calibri"
+FONT_CHINESE = "微软雅黑"
+
+
+def set_run_font(run, font_size: int = 10):
+    """Set consistent ASCII and East Asian fonts on a run."""
+    run.font.size = Pt(font_size)
+    run.font.name = FONT_ENGLISH
+    rPr = run._r.get_or_add_rPr()
+    rFonts = rPr.find(qn('w:rFonts'))
+    if rFonts is None:
+        rFonts = OxmlElement('w:rFonts')
+        rPr.insert(0, rFonts)
+    rFonts.set(qn('w:ascii'), FONT_ENGLISH)
+    rFonts.set(qn('w:hAnsi'), FONT_ENGLISH)
+    rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
+    rFonts.set(qn('w:cs'), FONT_ENGLISH)
+
 try:
     import requests
 except ImportError:
@@ -36,7 +54,7 @@ except ImportError:
     sys.exit(1)
 
 
-def add_hyperlink(paragraph, url: str, text: str):
+def add_hyperlink(paragraph, url: str, text: str, font_size: int = 10):
     """
     Add a hyperlink to a paragraph
 
@@ -46,6 +64,7 @@ def add_hyperlink(paragraph, url: str, text: str):
         paragraph: docx paragraph object
         url: URL to link to
         text: Link text
+        font_size: Font size in points
     """
     # Create hyperlink element
     part = paragraph.part
@@ -59,6 +78,22 @@ def add_hyperlink(paragraph, url: str, text: str):
 
     # Run properties (style)
     rPr = OxmlElement('w:rPr')
+
+    # Font names (ASCII + East Asian)
+    rFonts = OxmlElement('w:rFonts')
+    rFonts.set(qn('w:ascii'), FONT_ENGLISH)
+    rFonts.set(qn('w:hAnsi'), FONT_ENGLISH)
+    rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
+    rFonts.set(qn('w:cs'), FONT_ENGLISH)
+    rPr.append(rFonts)
+
+    # Font size (half-points)
+    sz = OxmlElement('w:sz')
+    sz.set(qn('w:val'), str(font_size * 2))
+    rPr.append(sz)
+    szCs = OxmlElement('w:szCs')
+    szCs.set(qn('w:val'), str(font_size * 2))
+    rPr.append(szCs)
 
     # Blue color
     color = OxmlElement('w:color')
@@ -98,19 +133,19 @@ def add_formatted_text(paragraph, text: str, font_size: int = 10):
         # Add text before the bold part
         if match.start() > last_end:
             run = paragraph.add_run(text[last_end:match.start()])
-            run.font.size = Pt(font_size)
+            set_run_font(run, font_size=font_size)
 
         # Add bold text
         run = paragraph.add_run(match.group(1))
         run.bold = True
-        run.font.size = Pt(font_size)
+        set_run_font(run, font_size=font_size)
 
         last_end = match.end()
 
     # Add remaining text after last match
     if last_end < len(text):
         run = paragraph.add_run(text[last_end:])
-        run.font.size = Pt(font_size)
+        set_run_font(run, font_size=font_size)
 
 
 def translate_to_chinese_claude(api_key: str, text: str) -> str:
@@ -317,7 +352,7 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
         header_cells[i].text = h_text
         for run in header_cells[i].paragraphs[0].runs:
             run.bold = True
-            run.font.size = Pt(10)
+            set_run_font(run, font_size=10)
 
     # Sort by date oldest first
     funding_events.sort(key=lambda x: x.get('date', ''))
@@ -328,19 +363,17 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
 
         # Col 0: date
         date_run = row_cells[0].paragraphs[0].add_run(event.get('date', '')[:10])
-        date_run.font.size = Pt(9)
+        set_run_font(date_run, font_size=9)
 
         # Col 1: company name, hyperlinked if URL available
         company = event.get('company', '不详')
         url = event.get('url', event.get('_url', ''))
         company_para = row_cells[1].paragraphs[0]
         if url:
-            add_hyperlink(company_para, url, company)
-            for r in company_para.runs:
-                r.font.size = Pt(9)
+            add_hyperlink(company_para, url, company, font_size=9)
         else:
             run = company_para.add_run(company)
-            run.font.size = Pt(9)
+            set_run_font(run, font_size=9)
 
         # Cols 2-6: remaining fields
         remaining = [
@@ -353,7 +386,7 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
         for i, val in enumerate(remaining, start=2):
             para = row_cells[i].paragraphs[0]
             run = para.add_run(str(val))
-            run.font.size = Pt(9)
+            set_run_font(run, font_size=9)
 
 
 def convert_bullets_to_paragraph(text: str) -> str:
@@ -450,7 +483,7 @@ def _add_deeptech_header_row(table, label: str, fill_hex: str):
     para.alignment = WD_ALIGN_PARAGRAPH.LEFT
     run = para.add_run(label)
     run.bold = True
-    run.font.size = Pt(11)
+    set_run_font(run, font_size=11)
     run.font.color.rgb = RGBColor(31, 73, 125)
 
 
@@ -488,7 +521,7 @@ def create_grouped_deeptech_table(
         for para in cell.paragraphs:
             for run in para.runs:
                 run.bold = True
-                run.font.size = Pt(12)
+                set_run_font(run, font_size=12)
 
     for cat in DEEPTECH_CATEGORY_ORDER:
         cat_articles = groups[cat]
@@ -501,17 +534,17 @@ def create_grouped_deeptech_table(
             row_cells = table.add_row().cells
 
             date_str = format_date_for_display(article.get('published_at', ''))
-            row_cells[0].paragraphs[0].add_run(date_str).font.size = Pt(10)
+            set_run_font(row_cells[0].paragraphs[0].add_run(date_str), font_size=10)
 
             summary_para = row_cells[1].paragraphs[0]
             title = article.get('title', 'No title')
             url = article.get('url', '')
             if url:
-                add_hyperlink(summary_para, url, title)
+                add_hyperlink(summary_para, url, title, font_size=10)
             else:
                 run = summary_para.add_run(title)
                 run.bold = True
-                run.font.size = Pt(10)
+                set_run_font(run, font_size=10)
 
             summary = article.get('summary', article.get('description', ''))
             summary_text = convert_bullets_to_paragraph(summary)
@@ -575,7 +608,7 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None, t
         for paragraph in cell.paragraphs:
             for run in paragraph.runs:
                 run.bold = True
-                run.font.size = Pt(12)
+                set_run_font(run, font_size=12)
 
     # Add data rows
     for i, article in enumerate(articles):
@@ -589,7 +622,7 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None, t
         date_cell = row_cells[0]
         date_para = date_cell.paragraphs[0]
         date_run = date_para.add_run(date_str)
-        date_run.font.size = Pt(10)
+        set_run_font(date_run, font_size=10)
 
         # Column 2: Title (hyperlinked) + Summary
         summary_cell = row_cells[1]
@@ -599,11 +632,11 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None, t
         title = article.get('title', 'No title')
         url = article.get('url', '')
         if url:
-            add_hyperlink(summary_para, url, title)
+            add_hyperlink(summary_para, url, title, font_size=10)
         else:
             run = summary_para.add_run(title)
             run.bold = True
-            run.font.size = Pt(10)
+            set_run_font(run, font_size=10)
 
         # Get summary and convert bullets to paragraph
         summary = article.get('summary', article.get('description', 'No summary available'))
@@ -690,7 +723,7 @@ def generate_word_doc(start_date: str, end_date: str,
     subtitle = doc.add_paragraph(f'{start_date} to {end_date}')
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for run in subtitle.runs:
-        run.font.size = Pt(14)
+        set_run_font(run, font_size=14)
         run.font.color.rgb = RGBColor(128, 128, 128)
 
     # Metadata
