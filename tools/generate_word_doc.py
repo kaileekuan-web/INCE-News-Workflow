@@ -304,13 +304,22 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
         current += timedelta(days=1)
         time.sleep(1.0)  # rate limiting between days
 
+    def _company_key(name: str) -> str:
+        # Strip Chinese characters — if an English name remains, use it as the key
+        # so "谷歌母公司 Alphabet" and "Alphabet" both map to "alphabet".
+        # Fall back to the full name for Chinese-only companies.
+        import re as _re
+        english = _re.sub(r'[一-鿿　-〿＀-￯\s]+', ' ', name).strip().lower()
+        return english if english else name.lower().strip()
+
     # Deduplicate by company name only — same company rarely raises twice in one period.
     # Keep the entry with the most complete information (fewest '不详' placeholders).
     seen: dict = {}
     for e in all_events:
-        company_key = e.get('company', '').lower().strip()
-        if not company_key:
+        raw_name = e.get('company', '')
+        if not raw_name:
             continue
+        company_key = _company_key(raw_name)
         if company_key not in seen:
             seen[company_key] = e
         else:
