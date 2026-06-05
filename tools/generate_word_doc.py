@@ -417,6 +417,29 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
     unique = list(seen.values())
     print(f"  Total unique funding events: {len(unique)}")
 
+    # Drop events outside the requested date range — the OpenAI web search
+    # often returns historical results regardless of the date specified.
+    try:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        in_range = []
+        out_of_range = 0
+        for e in unique:
+            event_date_str = e.get('date', '')[:10]
+            try:
+                event_dt = datetime.strptime(event_date_str, "%Y-%m-%d")
+                if start_dt <= event_dt <= end_dt:
+                    in_range.append(e)
+                else:
+                    out_of_range += 1
+            except ValueError:
+                in_range.append(e)  # keep events with unparseable dates
+        if out_of_range:
+            print(f"  Removed {out_of_range} event(s) outside {start_date}–{end_date}")
+        unique = in_range
+    except Exception as e:
+        print(f"  WARNING: Date filtering failed ({e}), keeping all events")
+
     # For AI topic, validate each event is genuinely AI-focused
     if topic == 'ai' and claude_key:
         print(f"  Validating AI relevance...")
@@ -822,14 +845,15 @@ def generate_word_doc(start_date: str, end_date: str,
 
     print(f"Loaded {len(articles)} articles")
 
-    # Check for Claude API key if translation is requested
-    claude_key = None
+    # Load Claude key — needed for translation and funding validation
+    claude_key = os.getenv('ANTHROPIC_API_KEY')
     if translate:
-        claude_key = os.getenv('ANTHROPIC_API_KEY')
         if not claude_key:
             print("ERROR: ANTHROPIC_API_KEY not found in .env file")
             sys.exit(1)
         print("Translation enabled (Claude)")
+    elif claude_key:
+        print("Claude key loaded (used for funding validation)")
 
     # Check for OpenAI key for funding extraction
     openai_key = os.getenv('OPENAI_API_KEY')
