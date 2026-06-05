@@ -36,16 +36,39 @@ FONT_CHINESE = "微软雅黑"
 def set_run_font(run, font_size: int = 10):
     """Set consistent ASCII and East Asian fonts on a run."""
     run.font.size = Pt(font_size)
-    run.font.name = FONT_ENGLISH
     rPr = run._r.get_or_add_rPr()
     rFonts = rPr.find(qn('w:rFonts'))
     if rFonts is None:
         rFonts = OxmlElement('w:rFonts')
         rPr.insert(0, rFonts)
+    # Set explicit fonts
     rFonts.set(qn('w:ascii'), FONT_ENGLISH)
     rFonts.set(qn('w:hAnsi'), FONT_ENGLISH)
     rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
     rFonts.set(qn('w:cs'), FONT_ENGLISH)
+    # Remove theme font attributes — in OOXML, theme attributes take precedence
+    # over explicit font names and will cause inconsistency if left in place.
+    for attr in (qn('w:asciiTheme'), qn('w:hAnsiTheme'), qn('w:eastAsiaTheme'), qn('w:cstheme')):
+        if attr in rFonts.attrib:
+            del rFonts.attrib[attr]
+
+
+def _set_para_font(para):
+    """Set consistent font names on every run in a paragraph without touching font size.
+    Used for headings and plain paragraphs so the style-defined size is preserved."""
+    for run in para.runs:
+        rPr = run._r.get_or_add_rPr()
+        rFonts = rPr.find(qn('w:rFonts'))
+        if rFonts is None:
+            rFonts = OxmlElement('w:rFonts')
+            rPr.insert(0, rFonts)
+        rFonts.set(qn('w:ascii'), FONT_ENGLISH)
+        rFonts.set(qn('w:hAnsi'), FONT_ENGLISH)
+        rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
+        rFonts.set(qn('w:cs'), FONT_ENGLISH)
+        for attr in (qn('w:asciiTheme'), qn('w:hAnsiTheme'), qn('w:eastAsiaTheme'), qn('w:cstheme')):
+            if attr in rFonts.attrib:
+                del rFonts.attrib[attr]
 
 try:
     import requests
@@ -346,12 +369,13 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
     doc.add_paragraph('')
     h = doc.add_heading(heading, level=1)
     h.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _set_para_font(h)
 
     if not funding_events:
-        doc.add_paragraph('该时间段内未发现融资事件。')
+        _set_para_font(doc.add_paragraph('该时间段内未发现融资事件。'))
         return
 
-    doc.add_paragraph(f'共 {len(funding_events)} 条融资记录\n')
+    _set_para_font(doc.add_paragraph(f'共 {len(funding_events)} 条融资记录\n'))
 
     # Create table with 7 columns
     table = doc.add_table(rows=1, cols=7)
@@ -524,6 +548,7 @@ def create_grouped_deeptech_table(
 
     h = doc.add_heading(heading, level=1)
     h.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _set_para_font(h)
     doc.add_paragraph(f'Total: {total} articles\n')
 
     table = doc.add_table(rows=1, cols=2)
