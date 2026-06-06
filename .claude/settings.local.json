@@ -5,7 +5,9 @@
       "Bash(python3 -c \":*)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(git -C /Users/kaileekuan/INCE-News-Workflow status)",
+      "Bash(git -C /Users/kaileekuan/INCE-News-Workflow diff tools/detect_funding.py tools/generate_word_doc.py tools/summarize_articles.py workflows/collect_ai_news.md)"
     ]
   }
 }
