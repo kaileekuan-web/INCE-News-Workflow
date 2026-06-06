@@ -1,0 +1,11 @@
+# Watchlist — companies to track for investment signals
+# One company name per line. Case-insensitive. Lines starting with # are ignored.
+# Any article mentioning a listed company will appear in the "Watchlist Highlights"
+# section at the top of the Word document.
+#
+# Examples:
+# Anthropic
+# OpenAI
+# Mistral
+# Cohere
+# Scale AI

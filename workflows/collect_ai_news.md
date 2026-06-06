@@ -106,16 +106,27 @@ Collect AI-related news from multiple sources (TechCrunch, TLDR AI, TLDR Main), 
      --articles .tmp/summarized_articles.json --translate
    ```
    - Input: `.tmp/summarized_articles.json`
-   - **Section 1 — AI News table** (2 columns):
-     - **Date**: Publication date, sorted oldest → newest
-     - **Summary**: Hyperlinked article title + Chinese translation paragraph + English paragraph
-   - **Section 2 — AI Fundraising News table** (6 columns):
-     - Columns: Date | Company | Summary | Stage | Raise | Investors
-     - Populated by **ChatGPT (`gpt-4o-search-preview`) with live web search** for the date range
-     - Uses `OPENAI_API_KEY` — requires paid OpenAI account with credits
+   - **Section 0 — Watchlist Highlights** (optional, appears if `watchlist.txt` has entries):
+     - Lists any articles mentioning companies in `watchlist.txt`, sorted by relevance
+     - Edit `watchlist.txt` (one company per line) to track investment targets
+   - **Section 1 — AI News table** (3 columns when categorized):
+     - **Date** | **优先级 (1-5)** | **Summary**: hyperlinked title + VC signal badge + Chinese/English paragraphs
+     - VC signal badges: `[融资]` `[产品]` `[合作]` `[人事]` `[监管]` `[研究]` — colored by type
+     - Articles grouped by category, sorted by relevance (highest first) within each group
+     - Filter low-signal noise: `--min-signal 3` drops relevance 1-2 articles
+   - **Section 2 — AI Fundraising News table** (7 columns):
+     - Columns: Date | Company | Summary | Stage | Raise | Valuation | Investors
+     - **Primary source**: Claude extracts structured funding events from collected articles
+     - **Supplemental source**: ChatGPT (`gpt-4o-search-preview`) live web search fills gaps
+     - Two sources are merged and deduplicated by company name (richer entry wins)
+     - Uses `ANTHROPIC_API_KEY` (primary) + `OPENAI_API_KEY` (supplement)
    - Output: `output/AI_News_20260108_20260124.docx`
    - Estimated time: 5-10 minutes (translation is the bottleneck at ~3s/article)
-   - Estimated cost: ~$0.50-1.00 Claude translation + ~$0.05-0.10 OpenAI funding search
+   - Estimated cost: ~$0.50-1.00 Claude translation + ~$0.02 Claude funding extraction + ~$0.05-0.10 OpenAI funding search
+
+   **New flags:**
+   - `--min-signal N` — only include articles with relevance ≥ N (1=all, 3=curated, 4=high-signal only)
+   - `--watchlist FILE` — path to watchlist file (default: `watchlist.txt`)
 
 ## Expected Outputs
 
@@ -283,7 +294,16 @@ cat .tmp/summarized_articles.json | jq '.[0]'
 
 ## Lessons Learned
 
-### 2026-02-25 Update (current)
+### 2026-06-06 Update (current)
+- **VC signal scoring**: `summarize_articles.py` now scores each article 1-5 on VC investment value (not just AI practitioner value) and classifies a `vc_signal` type: `funding`, `product`, `partnership`, `hire`, `regulatory`, `research`, `other`
+  - Scores appear as the 优先级 column in the Word doc
+  - Signal type appears as a colored badge next to the article title (e.g., `[融资]` in blue)
+  - Use `--min-signal 3` in generate_word_doc.py to drop low-value articles and cut noise
+- **Watchlist tracking**: Add company names to `watchlist.txt` (one per line) to get a "Watchlist Highlights" section at the top of every report. Any article mentioning a tracked company is surfaced there automatically.
+- **Claude-based funding extraction**: `detect_funding.py` now has `extract_funding_with_claude()` which uses Claude Haiku (~$0.02 for a full run) to extract structured funding events from collected articles — far more accurate than the previous regex approach. This runs first in `generate_word_doc.py`; OpenAI web search then supplements any gaps.
+- **Funding dedup**: `_merge_funding_events()` in `generate_word_doc.py` merges article-extracted and web-search-extracted events by company name, keeping the entry with the most complete data.
+
+### 2026-02-25 Update
 - Switched summarization from OpenAI to **Claude** (`claude-sonnet-4-20250514`) — more reliable, better quality
 - Added **Chinese translation** via Claude (`--translate` flag in generate_word_doc.py)
   - Translates each article summary to Simplified Chinese
@@ -349,8 +369,9 @@ cat .tmp/summarized_articles.json | jq '.[0]'
    python tools/summarize_articles.py --provider claude --yes
 
    # Phase 5: Word doc with Chinese translation + funding section
+   # Add --min-signal 3 to filter low-signal articles; edit watchlist.txt to track target companies
    python tools/generate_word_doc.py --start_date $START_DATE --end_date $END_DATE \
-     --articles .tmp/summarized_articles.json --translate
+     --articles .tmp/summarized_articles.json --translate --min-signal 3
    ```
 
 4. Find output: `output/AI_News_YYYYMMDD_YYYYMMDD.docx`

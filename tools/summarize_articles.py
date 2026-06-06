@@ -140,9 +140,12 @@ SUMMARY_PROMPT_ZH = (
     "只输出中文摘要段落，不需要标题或其他说明。"
 )
 
-# AI news mode: classify + score + Chinese summary in one call, returns JSON
+# AI news mode: classify + score + vc_signal + Chinese summary in one call, returns JSON.
+# Reframed from "AI practitioner value" to "VC investment value" so the relevance scores
+# weight what actually matters for investment decisions: funding rounds, founder moves,
+# market-shifting partnerships — not just technically interesting news.
 SUMMARY_PROMPT_AI = (
-    "你是一位AI行业分析师。请分析以下文章，用JSON格式返回三项内容：\n\n"
+    "你是一位AI行业分析师，服务于专注AI领域的风险投资机构。请分析以下文章，用JSON格式返回四项内容：\n\n"
     "1. category（类别）— 选择以下之一：\n"
     "   \"模型与研究\"：新模型发布、研究论文、技术突破、基准测试\n"
     "   \"产品与应用\"：新产品功能、应用场景、用户工具\n"
@@ -150,16 +153,24 @@ SUMMARY_PROMPT_AI = (
     "   \"政策与安全\"：AI监管、安全研究、伦理讨论、政府政策\n"
     "   \"行业动态\"：公司战略、合作、市场趋势、商业新闻\n"
     "   \"其他\"：不属于以上类别\n\n"
-    "2. relevance（AI行业重要性评分，1-5整数）——衡量该新闻对AI行业从业者的阅读价值：\n"
-    "   5 = 行业里程碑：重大模型发布、颠覆性技术突破、监管重大政策、头部公司百亿级融资\n"
-    "   4 = 重要发展：新模型能力显著提升、主要产品上线、重要战略合作或收购、值得行业从业者必读\n"
-    "   3 = 值得关注：渐进式产品更新、行业趋势分析、中等规模融资、有参考价值但非紧迫\n"
-    "   2 = 一般新闻：边缘公司小动作、重复性更新、话题缺乏新意、影响范围有限\n"
-    "   1 = 低重要性：营销内容、高度推测性报道、与AI行业关联较弱\n\n"
-    "3. summary（中文摘要）：2-4句自然段，涵盖发生了什么、涉及方、为何重要。"
+    "2. relevance（投资价值评分，1-5整数）——从VC视角衡量该新闻对投资决策的参考价值：\n"
+    "   5 = 必读：融资轮次（A轮以上大额）、重大收购、技术颠覆性突破、监管重大政策变化\n"
+    "   4 = 重要：新公司/产品进入市场、重要战略合作、知名创始人新动向、市场格局变化\n"
+    "   3 = 值得关注：渐进式产品更新、行业趋势分析、中小额融资、有参考价值但非紧迫\n"
+    "   2 = 一般：边缘公司小动作、重复性更新、话题缺乏新意\n"
+    "   1 = 低价值：营销内容、高度推测性报道、与AI投资关联较弱\n\n"
+    "3. vc_signal（VC信号类型）— 选择以下之一：\n"
+    "   \"funding\"：融资轮次、收购、IPO、战略投资等资金事件\n"
+    "   \"product\"：新产品发布、重大功能更新、技术突破\n"
+    "   \"partnership\"：战略合作、重要客户公告、生态集成\n"
+    "   \"hire\"：重要高管任命、创始团队变动、关键人才流动\n"
+    "   \"regulatory\"：监管政策、法规变化、政府动向\n"
+    "   \"research\"：研究成果、学术发现、技术验证\n"
+    "   \"other\"：不属于以上类别\n\n"
+    "4. summary（中文摘要）：2-4句自然段，涵盖发生了什么、涉及方、为何重要。"
     "直接从事实开始，不用「本文报道」等引导语。\n\n"
     "仅返回JSON，不含其他文字：\n"
-    "{{\"category\": \"模型与研究\", \"relevance\": 4, \"summary\": \"...\"}}\n\n"
+    "{{\"category\": \"模型与研究\", \"relevance\": 4, \"vc_signal\": \"research\", \"summary\": \"...\"}}\n\n"
     "文章内容：\n{text}"
 )
 
@@ -381,15 +392,20 @@ def generate_summary_claude(api_key: str, title: str, description: str, content:
 
         if categorize:
             try:
+                # Strip markdown code fences Claude sometimes wraps around JSON
                 json_text = re.sub(r'^```(?:json)?\s*\n?|\n?```$', '', text.strip()).strip()
 
+                # Use regex rather than json.loads because Claude occasionally includes
+                # unescaped quotes or newlines inside summary strings that break the parser.
                 cat_match = re.search(r'"category"\s*:\s*"([^"]+)"', json_text)
                 rel_match = re.search(r'"relevance"\s*:\s*([1-5])', json_text)
+                vc_match = re.search(r'"vc_signal"\s*:\s*"([^"]+)"', json_text)
                 sum_marker = '"summary": "'
                 sum_pos = json_text.find(sum_marker)
 
                 category = cat_match.group(1) if cat_match else '其他'
                 relevance = int(rel_match.group(1)) if rel_match else 3
+                vc_signal = vc_match.group(1) if vc_match else 'other'
 
                 if sum_pos != -1:
                     summary_raw = json_text[sum_pos + len(sum_marker):]
@@ -397,11 +413,11 @@ def generate_summary_claude(api_key: str, title: str, description: str, content:
                 else:
                     summary_text = fallback_summary
 
-                return {'category': category, 'relevance': relevance, 'summary': summary_text}
+                return {'category': category, 'relevance': relevance, 'vc_signal': vc_signal, 'summary': summary_text}
 
             except Exception:
                 print(f"  WARNING: Could not parse categorize response, using defaults")
-                return {'category': '其他', 'relevance': 3, 'summary': fallback_summary}
+                return {'category': '其他', 'relevance': 3, 'vc_signal': 'other', 'summary': fallback_summary}
 
         return {'summary': text}
 
@@ -640,7 +656,8 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
         if categorize and 'category' in result:
             article['category'] = result['category']
             article['relevance'] = result.get('relevance', 3)
-            print(f"  [{result.get('relevance', 3)}/5] {result['category']}")
+            article['vc_signal'] = result.get('vc_signal', 'other')
+            print(f"  [{result.get('relevance', 3)}/5] {result['category']} [{result.get('vc_signal', 'other')}]")
         article['full_content_fetched'] = bool(content)
         summarized_articles.append(article)
 

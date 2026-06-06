@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.utils import format_date_for_display
+from tools.detect_funding import extract_funding_with_claude
 
 try:
     from docx import Document
@@ -389,6 +390,44 @@ def _filter_ai_funding_events(claude_key: str, events: list) -> list:
     return events
 
 
+def _company_key(name: str) -> str:
+    """Normalize a company name to a dedup key.
+
+    Strips Chinese characters first so that bilingual names like
+    "谷歌母公司 Alphabet" and "Alphabet" collapse to the same key.
+    Falls back to the full lowercased name for Chinese-only companies.
+    """
+    english = re.sub(r'[一-鿿　-〿＀-￯\s]+', ' ', name).strip().lower()
+    return english if english else name.lower().strip()
+
+
+def _merge_funding_events(base: list, extra: list) -> list:
+    """Merge two funding event lists, deduplicating by company name.
+
+    'base' events take priority — they come from Claude's extraction of our
+    collected articles (higher fidelity). 'extra' events from the OpenAI web
+    search are only added if the company wasn't already found in base.
+    When two entries for the same company exist, the one with more non-unknown
+    fields is kept (fewest '不详'/'N/A' values wins).
+    """
+    seen: dict = {}
+    for e in base + extra:
+        raw_name = e.get('company', '')
+        if not raw_name:
+            continue
+        key = _company_key(raw_name)
+        if key not in seen:
+            seen[key] = e
+        else:
+            # Keep whichever entry has more filled-in fields
+            existing = seen[key]
+            existing_score = sum(1 for v in existing.values() if str(v) not in ('不详', '', 'N/A', None))
+            new_score = sum(1 for v in e.values() if str(v) not in ('不详', '', 'N/A', None))
+            if new_score > existing_score:
+                seen[key] = e
+    return list(seen.values())
+
+
 def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
                                topic: str = 'ai', claude_key: str = None) -> list:
     """
@@ -425,32 +464,7 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
         current += timedelta(days=1)
         time.sleep(1.0)  # rate limiting between days
 
-    def _company_key(name: str) -> str:
-        # Strip Chinese characters — if an English name remains, use it as the key
-        # so "谷歌母公司 Alphabet" and "Alphabet" both map to "alphabet".
-        # Fall back to the full name for Chinese-only companies.
-        import re as _re
-        english = _re.sub(r'[一-鿿　-〿＀-￯\s]+', ' ', name).strip().lower()
-        return english if english else name.lower().strip()
-
-    # Deduplicate by company name only — same company rarely raises twice in one period.
-    # Keep the entry with the most complete information (fewest '不详' placeholders).
-    seen: dict = {}
-    for e in all_events:
-        raw_name = e.get('company', '')
-        if not raw_name:
-            continue
-        company_key = _company_key(raw_name)
-        if company_key not in seen:
-            seen[company_key] = e
-        else:
-            existing = seen[company_key]
-            existing_score = sum(1 for v in existing.values() if str(v) not in ('不详', '', 'N/A'))
-            new_score = sum(1 for v in e.values() if str(v) not in ('不详', '', 'N/A'))
-            if new_score > existing_score:
-                seen[company_key] = e
-
-    unique = list(seen.values())
+    unique = _merge_funding_events(all_events, [])
     print(f"  Total unique funding events: {len(unique)}")
 
     # Drop events outside the requested date range — the OpenAI web search
@@ -738,11 +752,97 @@ def create_grouped_deeptech_table(
     return table
 
 
+# Short Chinese badge labels appended inline after each article title in the Word doc.
+# 'other' is intentionally omitted — no badge is shown for generic news, keeping
+# the visual noise low and making the meaningful signals stand out.
+VC_SIGNAL_LABELS = {
+    'funding':     '[融资]',
+    'product':     '[产品]',
+    'partnership': '[合作]',
+    'hire':        '[人事]',
+    'regulatory':  '[监管]',
+    'research':    '[研究]',
+}
+
+# Each signal type gets a distinct color so a reader can scan by color at a glance.
+VC_SIGNAL_COLORS = {
+    'funding':     RGBColor(0, 112, 192),   # blue
+    'product':     RGBColor(0, 128, 0),     # green
+    'partnership': RGBColor(112, 48, 160),  # purple
+    'hire':        RGBColor(197, 90, 17),   # orange
+    'regulatory':  RGBColor(192, 0, 0),     # red
+    'research':    RGBColor(31, 73, 125),   # dark blue
+}
+
+
+def _load_watchlist(watchlist_file: str) -> list:
+    """Load company names from watchlist.txt, one per line. Lines starting with # are comments."""
+    if not watchlist_file or not os.path.exists(watchlist_file):
+        # Silently skip if no file — watchlist is opt-in, not required
+        return []
+    with open(watchlist_file, 'r', encoding='utf-8') as f:
+        companies = [line.strip() for line in f if line.strip() and not line.startswith('#')]
+    if companies:
+        print(f"Watchlist loaded: {len(companies)} companies ({', '.join(companies[:5])}{'...' if len(companies) > 5 else ''})")
+    return companies
+
+
+def _check_watchlist(article: dict, watchlist: list) -> list:
+    """Return watchlist company names found in article title or summary.
+
+    Checks title + summary + description so it catches both original articles
+    and TLDR-style blurbs where the company name only appears in the description.
+    """
+    text = ' '.join([
+        article.get('title', ''),
+        article.get('summary', ''),
+        article.get('description', ''),
+    ]).lower()
+    return [co for co in watchlist if co.lower() in text]
+
+
+def create_watchlist_section(doc: Document, articles: list,
+                              translate: bool, claude_key: str, chinese_only: bool):
+    """Add a Watchlist Highlights section at the top of the document.
+
+    Appears before the main AI News table so investment team members can
+    immediately see news about companies they're actively tracking.
+    """
+    h = doc.add_heading('Watchlist Highlights', level=1)
+    h.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _set_para_font(h)
+
+    intro = doc.add_paragraph(f'{len(articles)} article(s) mentioning tracked companies\n')
+    _set_para_font(intro)
+
+    table = doc.add_table(rows=1, cols=3)
+    table.style = 'Light Grid Accent 1'
+    table.columns[0].width = Inches(0.75)
+    table.columns[1].width = Inches(0.45)
+    table.columns[2].width = Inches(5.3)
+    _set_table_cell_margins(table)
+
+    hdr = table.rows[0].cells
+    for i, txt in enumerate(['日期', '优先级', '摘要']):
+        hdr[i].text = txt
+        for run in hdr[i].paragraphs[0].runs:
+            run.bold = True
+            set_run_font(run, font_size=10)
+        if i == 1:
+            hdr[i].paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+    articles_sorted = sorted(articles, key=lambda x: (-x.get('relevance', 3), x.get('published_at', '')))
+    for idx, article in enumerate(articles_sorted):
+        _add_article_row(table, article, translate, claude_key, chinese_only,
+                         idx, len(articles_sorted), show_priority=True)
+
+
 def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
                         chinese_only: bool):
     """Fill the summary cell: hyperlinked title + body paragraph(s) with proper spacing."""
     title = article.get('title', 'No title')
     url = article.get('url', '')
+    vc_signal = article.get('vc_signal', '')
 
     title_para = cell.paragraphs[0]
     title_para.paragraph_format.space_after = Pt(3)
@@ -752,6 +852,14 @@ def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
         run = title_para.add_run(title)
         run.bold = True
         set_run_font(run, font_size=10)
+
+    # Append a colored VC signal badge inline with the title (e.g. "  [融资]" in blue).
+    # 'other' is skipped — only named signal types get a badge to avoid visual clutter.
+    if vc_signal and vc_signal != 'other' and vc_signal in VC_SIGNAL_LABELS:
+        badge_run = title_para.add_run('  ' + VC_SIGNAL_LABELS[vc_signal])
+        badge_run.bold = True
+        set_run_font(badge_run, font_size=9)
+        badge_run.font.color.rgb = VC_SIGNAL_COLORS[vc_signal]
 
     summary = article.get('summary', article.get('description', 'No summary available'))
     summary_text = convert_bullets_to_paragraph(summary)
@@ -901,7 +1009,9 @@ def generate_word_doc(start_date: str, end_date: str,
                       chinese_only: bool = False,
                       output_prefix: str = 'AI_News',
                       funding_topic: str = 'ai',
-                      doc_title: str = None):
+                      doc_title: str = None,
+                      min_signal: int = 1,
+                      watchlist_file: str = 'watchlist.txt'):
     """
     Main document generation function
 
@@ -927,6 +1037,19 @@ def generate_word_doc(start_date: str, end_date: str,
         articles = json.load(f)
 
     print(f"Loaded {len(articles)} articles")
+
+    # Drop articles below the requested relevance threshold before building the doc.
+    # Scores were assigned by Claude during summarization (1=low value, 5=must-read VC signal).
+    # Default is 1 (keep everything); pass --min-signal 3 to cut noise for a tighter brief.
+    # Articles that have no 'relevance' field (e.g. from an older run) default to 3.
+    if min_signal > 1:
+        before = len(articles)
+        articles = [a for a in articles if a.get('relevance', 3) >= min_signal]
+        print(f"Signal filter (>= {min_signal}): keeping {len(articles)}/{before} articles")
+
+    # Load the watchlist of investment-target company names (edit watchlist.txt to configure).
+    # Returns an empty list if the file doesn't exist, so the watchlist section is skipped.
+    watchlist = _load_watchlist(watchlist_file)
 
     # Load Claude key — needed for translation and funding validation
     claude_key = os.getenv('ANTHROPIC_API_KEY')
@@ -977,6 +1100,23 @@ def generate_word_doc(start_date: str, end_date: str,
 
     _add_horizontal_rule(doc)
 
+    # Watchlist highlights: scan every article for tracked company names and surface
+    # matches at the top of the doc before the main news table. The '_watchlist_matches'
+    # field is only used for debugging — it isn't rendered in the Word output.
+    if watchlist:
+        watchlist_hits = []
+        for article in articles:
+            matches = _check_watchlist(article, watchlist)
+            if matches:
+                article['_watchlist_matches'] = matches
+                watchlist_hits.append(article)
+        if watchlist_hits:
+            print(f"Watchlist: {len(watchlist_hits)} article(s) matched")
+            create_watchlist_section(doc, watchlist_hits, translate, claude_key, chinese_only)
+            _add_horizontal_rule(doc)
+        else:
+            print("Watchlist: no matches found this period")
+
     # Create news table (grouped for deeptech, flat for others)
     print("Creating news table...")
     if funding_topic == 'deeptech':
@@ -984,16 +1124,32 @@ def generate_word_doc(start_date: str, end_date: str,
     else:
         create_news_table(doc, articles, max_articles, translate, claude_key, chinese_only)
 
-    # Create funding section
+    # Two-source funding pipeline:
+    #   1. Claude extracts from the articles we already collected — fast, cheap (~$0.02),
+    #      and high fidelity because these articles were hand-curated by our sources.
+    #   2. OpenAI web search supplements with any funding events that weren't covered
+    #      by TechCrunch / TLDR (smaller raises, non-English coverage, etc.).
+    # Both lists are merged by _merge_funding_events(), keeping the richer entry per company.
+    # Claude extraction is AI-only for now; deeptech still relies solely on OpenAI web search.
     topic_label = "Deeptech" if funding_topic == "deeptech" else "AI"
-    print(f"Searching for {topic_label} funding news with ChatGPT (live web search)...")
+    all_funding_events = []
+
+    if claude_key and funding_topic == 'ai':
+        print("Extracting funding events from collected articles (Claude)...")
+        article_events = extract_funding_with_claude(claude_key, articles)
+        all_funding_events.extend(article_events)
+
     if openai_key:
-        funding_events = extract_funding_with_openai(openai_key, start_date, end_date, funding_topic, claude_key)
-        print(f"  Found {len(funding_events)} funding events")
+        print(f"Supplementing with {topic_label} funding web search (ChatGPT)...")
+        web_events = extract_funding_with_openai(openai_key, start_date, end_date, funding_topic, claude_key)
+        all_funding_events = _merge_funding_events(all_funding_events, web_events)
+        print(f"  Total after merge: {len(all_funding_events)} funding events")
+    elif not all_funding_events:
+        print("  WARNING: OPENAI_API_KEY not set and no Claude events found, skipping funding section")
+
+    if all_funding_events:
         heading_map = {"AI": "AI 融资动态", "Deeptech": "深科技融资动态"}
-        create_funding_table(doc, funding_events, heading=heading_map.get(topic_label, f"{topic_label} 融资动态"))
-    else:
-        print("  WARNING: OPENAI_API_KEY not set, skipping funding section")
+        create_funding_table(doc, all_funding_events, heading=heading_map.get(topic_label, f"{topic_label} 融资动态"))
 
     # Save document
     os.makedirs(output_dir, exist_ok=True)
@@ -1020,6 +1176,12 @@ def main():
     parser.add_argument('--funding-topic', choices=['ai', 'deeptech'], default='ai',
                         help='Funding search topic: ai (default) or deeptech')
     parser.add_argument('--doc-title', default=None, help='Document title (default: AI News Report)')
+    parser.add_argument('--min-signal', type=int, default=1, metavar='N',
+                        help='Minimum relevance score 1-5 to include in news table (default: 1 = all). '
+                             'Use 3 to drop low-value articles, 4 for high-signal-only.')
+    parser.add_argument('--watchlist', default='watchlist.txt', metavar='FILE',
+                        help='Path to watchlist file (default: watchlist.txt). '
+                             'One company name per line. Matching articles appear in a highlights section.')
     args = parser.parse_args()
 
     generate_word_doc(
@@ -1033,6 +1195,8 @@ def main():
         args.output_prefix,
         args.funding_topic,
         args.doc_title,
+        args.min_signal,
+        args.watchlist,
     )
 
 
