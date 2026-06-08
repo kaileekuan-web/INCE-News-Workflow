@@ -498,6 +498,22 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
     return unique
 
 
+def _funding_priority(event: dict) -> tuple:
+    """Return (label, fill_hex) for VC prioritization based on funding stage.
+
+    Early-stage rounds are highest priority because there is still room to invest
+    at a reasonable valuation. Later-stage / IPO events are informational only.
+    """
+    stage = (event.get('stage') or '').lower().strip()
+    if any(k in stage for k in ('seed', 'pre', 'angel', 'a轮', 'series a', '天使', '种子')):
+        return ('重点关注', 'F4CCCC')   # light red — early stage, act fast
+    if any(k in stage for k in ('series b', 'b轮', 'b+')):
+        return ('值得关注', 'FFF2CC')   # light yellow — still interesting
+    if not stage or stage in ('不详', 'n/a', 'na', 'unknown'):
+        return ('值得关注', 'FFF2CC')   # light yellow — unknown, worth checking
+    return ('一般了解', 'F3F3F3')       # light gray — Series C+, IPO, acquisition
+
+
 def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI 融资动态'):
     """
     Add Fundraising News section with a 7-column table (all Chinese).
@@ -518,17 +534,17 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
 
     _set_para_font(doc.add_paragraph(f'共 {len(funding_events)} 条融资记录\n'))
 
-    # Create table with 7 columns
-    table = doc.add_table(rows=1, cols=7)
+    # Create table with 8 columns (added 优先级 after company)
+    table = doc.add_table(rows=1, cols=8)
     table.style = 'Light Grid Accent 1'
 
-    col_widths = [Inches(0.65), Inches(0.85), Inches(1.75), Inches(0.55), Inches(0.6), Inches(0.6), Inches(1.5)]
+    col_widths = [Inches(0.65), Inches(0.85), Inches(0.7), Inches(1.4), Inches(0.55), Inches(0.6), Inches(0.6), Inches(1.2)]
     for i, width in enumerate(col_widths):
         table.columns[i].width = width
     _set_table_cell_margins(table)
 
     # Header row (Chinese)
-    headers = ['日期', '公司', '概述', '轮次', '融资额', '估值', '投资方']
+    headers = ['日期', '公司', '优先级', '概述', '轮次', '融资额', '估值', '投资方']
     header_cells = table.rows[0].cells
     for i, h_text in enumerate(headers):
         header_cells[i].text = h_text
@@ -557,7 +573,20 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
             run = company_para.add_run(company)
             set_run_font(run, font_size=9)
 
-        # Cols 2-6: remaining fields
+        # Col 2: priority badge with background shading
+        label, fill_hex = _funding_priority(event)
+        priority_cell = row_cells[2]
+        tcPr = priority_cell._tc.get_or_add_tcPr()
+        shd = OxmlElement('w:shd')
+        shd.set(qn('w:val'), 'clear')
+        shd.set(qn('w:color'), 'auto')
+        shd.set(qn('w:fill'), fill_hex)
+        tcPr.append(shd)
+        priority_run = priority_cell.paragraphs[0].add_run(label)
+        priority_run.bold = True
+        set_run_font(priority_run, font_size=9)
+
+        # Cols 3-7: remaining fields
         remaining = [
             event.get('summary', '不详'),
             event.get('stage', '不详'),
@@ -565,7 +594,7 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
             event.get('valuation', '不详'),
             event.get('investors', '不详'),
         ]
-        for i, val in enumerate(remaining, start=2):
+        for i, val in enumerate(remaining, start=3):
             para = row_cells[i].paragraphs[0]
             run = para.add_run(str(val))
             set_run_font(run, font_size=9)
