@@ -30,7 +30,7 @@ except ImportError:
     print("ERROR: python-docx not installed. Run: pip install python-docx")
     sys.exit(1)
 
-FONT_ENGLISH = "Calibri"
+FONT_ENGLISH = "Microsoft YaHei"
 FONT_CHINESE = "微软雅黑"
 
 
