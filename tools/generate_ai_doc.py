@@ -30,6 +30,10 @@ from tools.generate_word_doc import (
     extract_funding_with_openai,
     create_funding_table,
     convert_bullets_to_paragraph,
+    set_run_font,
+    _set_para_font,
+    FONT_ENGLISH,
+    FONT_CHINESE,
 )
 
 try:
@@ -221,7 +225,7 @@ def _add_group_header_row(table, label: str, fill_hex: str = "D6E4F0"):
     para.alignment = WD_ALIGN_PARAGRAPH.LEFT
     run = para.add_run(label)
     run.bold = True
-    run.font.size = Pt(11)
+    set_run_font(run, font_size=11)
     run.font.color.rgb = RGBColor(31, 73, 125)
 
 
@@ -251,6 +255,7 @@ def create_grouped_news_table(
 
     heading = doc.add_heading("AI News Summary", level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _set_para_font(heading)
     doc.add_paragraph(f"Total: {total} articles\n")
 
     # Create 2-column table
@@ -267,7 +272,7 @@ def create_grouped_news_table(
         for para in cell.paragraphs:
             for run in para.runs:
                 run.bold = True
-                run.font.size = Pt(12)
+                set_run_font(run, font_size=12)
 
     # Populate groups
     article_counter = 0
@@ -288,7 +293,7 @@ def create_grouped_news_table(
             # Col 0: date
             date_str = format_date_for_display(article.get("published_at", ""))
             date_run = row_cells[0].paragraphs[0].add_run(date_str)
-            date_run.font.size = Pt(10)
+            set_run_font(date_run, font_size=10)
 
             # Col 1: hyperlinked title + summary
             summary_cell = row_cells[1]
@@ -301,12 +306,12 @@ def create_grouped_news_table(
             else:
                 run = summary_para.add_run(title)
                 run.bold = True
-                run.font.size = Pt(10)
+                set_run_font(run, font_size=10)
 
             raw_summary = article.get("summary", article.get("description", "No summary available"))
             summary_text = convert_bullets_to_paragraph(raw_summary)
 
-            summary_para.add_run("\n\n")
+            set_run_font(summary_para.add_run("\n\n"), font_size=10)
 
             if chinese_only:
                 add_formatted_text(summary_para, summary_text, font_size=10)
@@ -315,7 +320,7 @@ def create_grouped_news_table(
                 if chinese:
                     add_formatted_text(summary_para, chinese, font_size=10)
                     time.sleep(0.3)
-                summary_para.add_run("\n\n")
+                set_run_font(summary_para.add_run("\n\n"), font_size=10)
                 add_formatted_text(summary_para, summary_text, font_size=10)
             else:
                 add_formatted_text(summary_para, summary_text, font_size=10)
@@ -376,16 +381,33 @@ def generate_ai_doc(
     doc = Document()
 
     style = doc.styles["Normal"]
-    style.font.name = "Arial"
     style.font.size = Pt(10.5)
+    # Stamp both ASCII and East Asian fonts onto the Normal style's XML so CJK
+    # characters don't fall back to Word's default (宋体/SimSun) in compatibility mode.
+    _rPr = style.element.find(qn('w:rPr'))
+    if _rPr is None:
+        _rPr = OxmlElement('w:rPr')
+        style.element.append(_rPr)
+    _rFonts = _rPr.find(qn('w:rFonts'))
+    if _rFonts is None:
+        _rFonts = OxmlElement('w:rFonts')
+        _rPr.insert(0, _rFonts)
+    _rFonts.set(qn('w:ascii'), FONT_ENGLISH)
+    _rFonts.set(qn('w:hAnsi'), FONT_ENGLISH)
+    _rFonts.set(qn('w:eastAsia'), FONT_CHINESE)
+    _rFonts.set(qn('w:cs'), FONT_ENGLISH)
+    for _attr in (qn('w:asciiTheme'), qn('w:hAnsiTheme'), qn('w:eastAsiaTheme'), qn('w:cstheme')):
+        if _attr in _rFonts.attrib:
+            del _rFonts.attrib[_attr]
 
     title_para = doc.add_heading("AI News Report", level=0)
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _set_para_font(title_para)
 
     subtitle = doc.add_paragraph(f"{start_date}  to  {end_date}")
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for run in subtitle.runs:
-        run.font.size = Pt(14)
+        set_run_font(run, font_size=14)
         run.font.color.rgb = RGBColor(128, 128, 128)
 
     doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
