@@ -690,8 +690,8 @@ def main():
     parser.add_argument('--provider', choices=['claude', 'gemini', 'openai'], default='claude',
                        help='AI provider to use (default: claude)')
     parser.add_argument('--yes', '-y', action='store_true', help='Skip cost confirmation prompt')
-    parser.add_argument('--language', choices=['en', 'zh'], default='en',
-                        help='Summary output language: en=English (default), zh=Chinese')
+    parser.add_argument('--language', choices=['en', 'zh'], default='zh',
+                        help='Summary output language: zh=Chinese (default), en=English')
     parser.add_argument('--consumer', action='store_true',
                         help='Consumer mode: classify articles into 行业动态/融资新闻 and generate '
                              'category-appropriate Chinese summaries (Claude only)')

@@ -114,10 +114,10 @@ def article_to_funding_event(article: dict, claude_key: str = None) -> dict:
                 "date": date,
                 "company": data.get("company", title),
                 "summary": data.get("summary", ""),
-                "stage": data.get("stage", "N/A"),
-                "raise": data.get("raise", "N/A"),
-                "valuation": data.get("valuation", "N/A"),
-                "investors": data.get("investors", "N/A"),
+                "stage": data.get("stage", "不详"),
+                "raise": data.get("raise", "不详"),
+                "valuation": data.get("valuation", "不详"),
+                "investors": data.get("investors", "不详"),
                 "_url": article.get("url", ""),
             }
         except Exception as e:
@@ -129,10 +129,10 @@ def article_to_funding_event(article: dict, claude_key: str = None) -> dict:
         "date": date,
         "company": title,
         "summary": raw[:200],
-        "stage": "N/A",
-        "raise": "N/A",
-        "valuation": "N/A",
-        "investors": "N/A",
+        "stage": "不详",
+        "raise": "不详",
+        "valuation": "不详",
+        "investors": "不详",
         "_url": article.get("url", ""),
     }
 
@@ -144,8 +144,8 @@ GROUP_ORDER = ["OpenAI", "Anthropic", "BigTech", "Other"]
 GROUP_DISPLAY = {
     "OpenAI": "OpenAI",
     "Anthropic": "Anthropic",
-    "BigTech": "BigTech  ( Google · Apple · Amazon · Meta · Microsoft · Netflix · xAI · NVIDIA )",
-    "Other": "Other",
+    "BigTech": "大型科技公司（谷歌 · 苹果 · 亚马逊 · Meta · 微软 · Netflix · xAI · 英伟达）",
+    "Other": "其他",
 }
 
 # Header row fill colours (light blue family)
@@ -253,10 +253,10 @@ def create_grouped_news_table(
 
     total = sum(len(v) for v in groups.values())
 
-    heading = doc.add_heading("AI News Summary", level=1)
+    heading = doc.add_heading("AI 新闻摘要", level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_para_font(heading)
-    doc.add_paragraph(f"Total: {total} articles\n")
+    doc.add_paragraph(f"共 {total} 篇\n")
 
     # Create 2-column table
     table = doc.add_table(rows=1, cols=2)
@@ -266,8 +266,8 @@ def create_grouped_news_table(
 
     # Header row
     hdr = table.rows[0].cells
-    hdr[0].text = "Date"
-    hdr[1].text = "Summary"
+    hdr[0].text = "日期"
+    hdr[1].text = "摘要"
     for cell in hdr:
         for para in cell.paragraphs:
             for run in para.runs:
@@ -299,7 +299,11 @@ def create_grouped_news_table(
             summary_cell = row_cells[1]
             summary_para = summary_cell.paragraphs[0]
 
-            title = article.get("title", "No title")
+            title = article.get("title", "无标题")
+            # Translate title to Chinese when in chinese-only or translate mode
+            if (chinese_only or translate) and claude_key:
+                title = translate_to_chinese_claude(claude_key, title) or title
+                time.sleep(0.2)
             url = article.get("url", "")
             if url:
                 add_hyperlink(summary_para, url, title)
@@ -308,7 +312,7 @@ def create_grouped_news_table(
                 run.bold = True
                 set_run_font(run, font_size=10)
 
-            raw_summary = article.get("summary", article.get("description", "No summary available"))
+            raw_summary = article.get("summary", article.get("description", "暂无摘要"))
             summary_text = convert_bullets_to_paragraph(raw_summary)
 
             set_run_font(summary_para.add_run("\n\n"), font_size=10)
@@ -337,7 +341,7 @@ def generate_ai_doc(
     output_dir: str = "output",
     max_articles: int = None,
     translate: bool = False,
-    chinese_only: bool = False,
+    chinese_only: bool = True,
     output_prefix: str = "AI_News",
     no_funding: bool = False,
     funding_wechat_file: str = None,
@@ -368,12 +372,15 @@ def generate_ai_doc(
             print(f"  Detected {len(funding_articles)} fundraising articles — moving to funding table")
 
     claude_key = None
-    if translate:
+    if translate or chinese_only:
         claude_key = os.getenv("ANTHROPIC_API_KEY")
         if not claude_key:
             print("ERROR: ANTHROPIC_API_KEY not found in .env")
             sys.exit(1)
-        print("Translation enabled (Claude)")
+        if translate:
+            print("Translation enabled (Claude)")
+        else:
+            print("Chinese mode enabled (Claude for title translation)")
 
     openai_key = os.getenv("OPENAI_API_KEY")
 
@@ -400,21 +407,21 @@ def generate_ai_doc(
         if _attr in _rFonts.attrib:
             del _rFonts.attrib[_attr]
 
-    title_para = doc.add_heading("AI News Report", level=0)
+    title_para = doc.add_heading("AI 资讯报告", level=0)
     title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     _set_para_font(title_para)
 
-    subtitle = doc.add_paragraph(f"{start_date}  to  {end_date}")
+    subtitle = doc.add_paragraph(f"{start_date}  至  {end_date}")
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for run in subtitle.runs:
         set_run_font(run, font_size=14)
         run.font.color.rgb = RGBColor(128, 128, 128)
 
-    doc.add_paragraph(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    doc.add_paragraph(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
     total_str = str(len(regular_articles))
     if not no_funding and funding_articles:
-        total_str += f" (+ {len(funding_articles)} moved to funding table)"
-    doc.add_paragraph(f"Total Articles: {total_str}")
+        total_str += f"（另有 {len(funding_articles)} 篇移至融资动态）"
+    doc.add_paragraph(f"文章总数：{total_str}")
     doc.add_paragraph("")
 
     print("Creating grouped news table...")

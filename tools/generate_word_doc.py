@@ -745,7 +745,7 @@ def create_grouped_deeptech_table(
     h = doc.add_heading(heading, level=1)
     h.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_para_font(h)
-    doc.add_paragraph(f'Total: {total} articles\n')
+    doc.add_paragraph(f'共 {total} 篇\n')
 
     table = doc.add_table(rows=1, cols=2)
     table.style = 'Light Grid Accent 1'
@@ -754,8 +754,8 @@ def create_grouped_deeptech_table(
     _set_table_cell_margins(table)
 
     hdr = table.rows[0].cells
-    hdr[0].text = 'Date'
-    hdr[1].text = 'Summary'
+    hdr[0].text = '日期'
+    hdr[1].text = '摘要'
     for cell in hdr:
         for para in cell.paragraphs:
             for run in para.runs:
@@ -837,11 +837,11 @@ def create_watchlist_section(doc: Document, articles: list,
     Appears before the main AI News table so investment team members can
     immediately see news about companies they're actively tracking.
     """
-    h = doc.add_heading('Watchlist Highlights', level=1)
+    h = doc.add_heading('关注公司动态', level=1)
     h.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_para_font(h)
 
-    intro = doc.add_paragraph(f'{len(articles)} article(s) mentioning tracked companies\n')
+    intro = doc.add_paragraph(f'共 {len(articles)} 篇提及关注公司的文章\n')
     _set_para_font(intro)
 
     table = doc.add_table(rows=1, cols=3)
@@ -869,7 +869,7 @@ def create_watchlist_section(doc: Document, articles: list,
 def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
                         chinese_only: bool):
     """Fill the summary cell: hyperlinked title + body paragraph(s) with proper spacing."""
-    title = article.get('title', 'No title')
+    title = article.get('title', '无标题')
     url = article.get('url', '')
     vc_signal = article.get('vc_signal', '')
 
@@ -890,7 +890,7 @@ def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
         set_run_font(badge_run, font_size=9)
         badge_run.font.color.rgb = VC_SIGNAL_COLORS[vc_signal]
 
-    summary = article.get('summary', article.get('description', 'No summary available'))
+    summary = article.get('summary', article.get('description', '暂无摘要'))
     summary_text = convert_bullets_to_paragraph(summary)
 
     if chinese_only:
@@ -961,10 +961,10 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None,
     if max_articles:
         articles = articles[:max_articles]
 
-    heading = doc.add_heading('AI News Summary', level=1)
+    heading = doc.add_heading('AI 新闻摘要', level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_para_font(heading)
-    doc.add_paragraph(f'Total: {len(articles)} articles\n')
+    doc.add_paragraph(f'共 {len(articles)} 篇\n')
 
     is_categorized = any('category' in a for a in articles)
 
@@ -994,8 +994,8 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None,
         _set_table_cell_margins(table)
 
         hdr = table.rows[0].cells
-        hdr[0].text = 'Date'
-        hdr[1].text = 'Summary'
+        hdr[0].text = '日期'
+        hdr[1].text = '摘要'
         for cell in hdr:
             for para in cell.paragraphs:
                 for run in para.runs:
@@ -1105,13 +1105,13 @@ def generate_word_doc(start_date: str, end_date: str,
     section.bottom_margin = Inches(1.0)
 
     # Title
-    display_title = doc_title if doc_title else 'AI News Report'
+    display_title = doc_title if doc_title else 'AI 资讯报告'
     title = doc.add_heading(display_title, level=0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     _set_para_font(title)
 
     # Subtitle with date range
-    subtitle = doc.add_paragraph(f'{start_date} to {end_date}')
+    subtitle = doc.add_paragraph(f'{start_date} 至 {end_date}')
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
     for run in subtitle.runs:
         set_run_font(run, font_size=14)
@@ -1121,8 +1121,8 @@ def generate_word_doc(start_date: str, end_date: str,
     meta_para = doc.add_paragraph()
     meta_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     meta_run = meta_para.add_run(
-        f'Generated: {datetime.now().strftime("%Y-%m-%d %H:%M")}  ·  '
-        f'Total Articles: {len(articles)}'
+        f'生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M")}  ·  '
+        f'文章总数：{len(articles)}'
     )
     set_run_font(meta_run, font_size=9)
     meta_run.font.color.rgb = RGBColor(140, 140, 140)
