@@ -317,8 +317,10 @@ def create_grouped_news_table(
 
             set_run_font(summary_para.add_run("\n\n"), font_size=10)
 
-            if chinese_only:
-                add_formatted_text(summary_para, summary_text, font_size=10)
+            if chinese_only and claude_key:
+                chinese = translate_to_chinese_claude(claude_key, summary_text)
+                add_formatted_text(summary_para, chinese or summary_text, font_size=10)
+                time.sleep(0.2)
             elif translate and claude_key:
                 chinese = translate_to_chinese_claude(claude_key, summary_text)
                 if chinese:
