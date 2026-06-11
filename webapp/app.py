@@ -395,6 +395,8 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
 
         # Phase 5: Deduplicate
         _log(job_id, "=== [5/7] Deduplicating ===")
+        sys.path.insert(0, str(BASE_DIR))
+        from tools.utils import deduplicate_articles
         all_articles = []
         for fname in ("raw_tldr_ai.json", "raw_tldr_main.json", "raw_techcrunch.json"):
             p = tmp / fname
@@ -402,11 +404,7 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
                 with open(p, encoding="utf-8") as f:
                     all_articles.extend(json.load(f))
         all_articles.extend(wechat_articles)
-        seen, unique = set(), []
-        for a in all_articles:
-            url = a.get("url", "")
-            if url and url not in seen:
-                seen.add(url); unique.append(a)
+        unique = deduplicate_articles(all_articles)
         classified = str(tmp / "classified_articles.json")
         with open(classified, "w", encoding="utf-8") as f:
             json.dump(unique, f, ensure_ascii=False, indent=2)

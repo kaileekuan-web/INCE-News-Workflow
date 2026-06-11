@@ -302,21 +302,6 @@ def create_grouped_news_table(
             summary_cell = row_cells[1]
             summary_para = summary_cell.paragraphs[0]
 
-            # Embed article thumbnail above the title when available
-            image_url = article.get("image_url", "")
-            if image_url:
-                try:
-                    img_resp = requests.get(
-                        image_url, timeout=5,
-                        headers={"User-Agent": "Mozilla/5.0"},
-                    )
-                    img_resp.raise_for_status()
-                    img_run = summary_para.add_run()
-                    img_run.add_picture(BytesIO(img_resp.content), width=Inches(2.0))
-                    set_run_font(summary_para.add_run("\n"), font_size=10)
-                except Exception:
-                    pass  # Skip silently if image is unavailable
-
             title = article.get("title", "无标题")
             # Translate title to Chinese when in chinese-only or translate mode
             if (chinese_only or translate) and claude_key:
@@ -348,6 +333,21 @@ def create_grouped_news_table(
                 add_formatted_text(summary_para, summary_text, font_size=10)
             else:
                 add_formatted_text(summary_para, summary_text, font_size=10)
+
+            # Embed article thumbnail after the summary text
+            image_url = article.get("image_url", "")
+            if image_url:
+                try:
+                    img_resp = requests.get(
+                        image_url, timeout=5,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                    )
+                    img_resp.raise_for_status()
+                    set_run_font(summary_para.add_run("\n"), font_size=10)
+                    img_run = summary_para.add_run()
+                    img_run.add_picture(BytesIO(img_resp.content), width=Inches(2.0))
+                except Exception:
+                    pass
 
     return table
 
