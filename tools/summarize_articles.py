@@ -132,7 +132,7 @@ SUMMARY_PROMPT_EN = (
 )
 
 SUMMARY_PROMPT_ZH = (
-    "你是一位AI行业分析师。请用简洁流畅的中文段落（2-4句话）总结以下文章，"
+    "你是一位AI行业分析师。请用简洁流畅的中文段落（4-6句话）总结以下文章，"
     "内容涵盖：发生了什么、涉及哪些方、事件意义，以及对行业或市场的潜在影响。"
     "将影响与启示自然融入叙述，不要单独列出，也不要使用列表或要点形式。"
     "摘要须直接从事实开始，不要使用「本文报道」、「文章介绍」等引导语。\n\n"
@@ -167,7 +167,7 @@ SUMMARY_PROMPT_AI = (
     "   \"regulatory\"：监管政策、法规变化、政府动向\n"
     "   \"research\"：研究成果、学术发现、技术验证\n"
     "   \"other\"：不属于以上类别\n\n"
-    "4. summary（中文摘要）：2-4句自然段，涵盖发生了什么、涉及方、为何重要。"
+    "4. summary（中文摘要）：4-6句自然段，涵盖发生了什么、涉及方、为何重要、对行业或投资格局的潜在影响。"
     "直接从事实开始，不用「本文报道」等引导语。\n\n"
     "仅返回JSON，不含其他文字：\n"
     "{{\"category\": \"模型与研究\", \"relevance\": 4, \"vc_signal\": \"research\", \"summary\": \"...\"}}\n\n"
@@ -291,7 +291,7 @@ def generate_summary_openai(client, title: str, description: str, content: str, 
                 }
             ],
             temperature=0.3,
-            max_tokens=200
+            max_tokens=500
         )
 
         summary = response.choices[0].message.content.strip()
@@ -339,8 +339,8 @@ def generate_summary_claude(api_key: str, title: str, description: str, content:
         }
 
         payload = {
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 600,
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 1000,
             "messages": [
                 {
                     "role": "user",

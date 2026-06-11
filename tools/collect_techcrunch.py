@@ -85,7 +85,8 @@ def collect_techcrunch_newsapi(start_date: str, end_date: str) -> list:
                 'url': article.get('url', ''),
                 'published_at': article.get('publishedAt', ''),
                 'content': clean_text(article.get('content', '')),
-                'raw': article  # Keep original for debugging
+                'image_url': article.get('urlToImage', ''),
+                'raw': article
             })
 
         return articles

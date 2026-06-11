@@ -19,6 +19,7 @@ import re
 import argparse
 import time
 from datetime import datetime
+from io import BytesIO
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -300,6 +301,21 @@ def create_grouped_news_table(
             # Col 1: hyperlinked title + summary
             summary_cell = row_cells[1]
             summary_para = summary_cell.paragraphs[0]
+
+            # Embed article thumbnail above the title when available
+            image_url = article.get("image_url", "")
+            if image_url:
+                try:
+                    img_resp = requests.get(
+                        image_url, timeout=5,
+                        headers={"User-Agent": "Mozilla/5.0"},
+                    )
+                    img_resp.raise_for_status()
+                    img_run = summary_para.add_run()
+                    img_run.add_picture(BytesIO(img_resp.content), width=Inches(2.0))
+                    set_run_font(summary_para.add_run("\n"), font_size=10)
+                except Exception:
+                    pass  # Skip silently if image is unavailable
 
             title = article.get("title", "无标题")
             # Translate title to Chinese when in chinese-only or translate mode
