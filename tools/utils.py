@@ -9,8 +9,7 @@ Functions:
 - Normalization
 """
 
-from datetime import datetime, timedelta
-import hashlib
+from datetime import datetime
 from urllib.parse import urlparse
 from typing import Tuple, List, Dict, Any
 
@@ -44,41 +43,76 @@ def validate_date_range(start_date: str, end_date: str) -> Tuple[datetime, datet
     return start_dt, end_dt
 
 
-def deduplicate_articles(articles: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Remove duplicate articles based on URL or title similarity
+_STOP_WORDS = {
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'in', 'on', 'at', 'to', 'for', 'of', 'and', 'or', 'with', 'by',
+    'from', 'its', 'it', 'this', 'that', 'as', 'up', 'out', 'new',
+    'has', 'have', 'had', 'will', 'would', 'could', 'can', 'may',
+}
 
-    Args:
-        articles: List of article dictionaries
 
-    Returns:
-        Deduplicated list
+def _title_words(title: str) -> frozenset:
+    """Normalize a title to a word set for similarity comparison."""
+    import re
+    words = re.sub(r'[^a-z0-9\s]', ' ', title.lower()).split()
+    return frozenset(w for w in words if w not in _STOP_WORDS and len(w) > 1)
+
+
+def _jaccard(a: frozenset, b: frozenset) -> float:
+    if not a or not b:
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def _content_length(article: Dict[str, Any]) -> int:
+    return len(article.get('content') or article.get('description') or '')
+
+
+def deduplicate_articles(articles: List[Dict[str, Any]],
+                         similarity_threshold: float = 0.5) -> List[Dict[str, Any]]:
     """
-    seen_urls = set()
-    seen_title_hashes = set()
-    unique_articles = []
+    Remove duplicate articles by URL and by title similarity.
+
+    Two articles are considered duplicates when their Jaccard word-set
+    similarity exceeds similarity_threshold (default 0.5). When duplicates
+    are found the article with more content is kept, so the richer version
+    of the same story survives.
+    """
+    seen_urls: set = set()
+    accepted: list = []        # (article, title_words) pairs kept so far
 
     for article in articles:
         url = article.get('url', '')
         title = article.get('title', '')
 
-        # Check URL
+        # Exact URL match — always a duplicate
         if url and url in seen_urls:
             continue
 
-        # Check title similarity (hash first 50 chars)
-        if title:
-            title_hash = hashlib.md5(title[:50].lower().encode()).hexdigest()
-            if title_hash in seen_title_hashes:
-                continue
-            seen_title_hashes.add(title_hash)
+        words = _title_words(title)
 
-        # Not a duplicate
-        if url:
-            seen_urls.add(url)
-        unique_articles.append(article)
+        # Check semantic similarity against every already-accepted article
+        duplicate_idx = None
+        for i, (_, kept_words) in enumerate(accepted):
+            if _jaccard(words, kept_words) >= similarity_threshold:
+                duplicate_idx = i
+                break
 
-    return unique_articles
+        if duplicate_idx is not None:
+            # Keep whichever version has richer content
+            kept_article, kept_words = accepted[duplicate_idx]
+            if _content_length(article) > _content_length(kept_article):
+                accepted[duplicate_idx] = (article, words)
+                if kept_article.get('url'):
+                    seen_urls.discard(kept_article['url'])
+                if url:
+                    seen_urls.add(url)
+        else:
+            accepted.append((article, words))
+            if url:
+                seen_urls.add(url)
+
+    return [art for art, _ in accepted]
 
 
 def clean_text(text: str) -> str:

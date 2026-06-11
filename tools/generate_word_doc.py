@@ -498,6 +498,94 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
     return unique
 
 
+def generate_executive_summary(api_key: str, articles: list) -> str:
+    """
+    Generate a 2-3 paragraph Chinese executive summary from the week's top articles.
+
+    Uses the highest-relevance articles as context so Claude focuses on what
+    actually matters for investment decisions, not just volume of news.
+    Returns empty string on failure so callers can skip the section gracefully.
+    """
+    # Feed only the most relevant articles to keep the prompt tight and focused
+    top = sorted(articles, key=lambda a: a.get('relevance', 3), reverse=True)[:15]
+    if not top:
+        return ''
+
+    news_lines = '\n'.join(
+        f"- [{a.get('relevance', 3)}/5] {a.get('title', '')}：{a.get('summary', '')[:120]}"
+        for a in top
+    )
+
+    prompt = (
+        "你是一位专注AI领域的风险投资分析师。基于以下本周AI行业重要新闻，生成一份简洁的执行摘要。\n\n"
+        "要求：\n"
+        "- 共2-3段，每段2-3句\n"
+        "- 第一段：本周最重要的技术或产品动态\n"
+        "- 第二段：值得关注的融资、并购或公司战略动向\n"
+        "- 第三段（可选）：对AI投资格局的整体判断或近期需重点关注的方向\n"
+        "- 语言简洁专业，直接切入重点，不要列表\n\n"
+        f"本周新闻（按投资价值排序）：\n{news_lines}\n\n"
+        "只输出摘要正文，不要标题或其他说明。"
+    )
+
+    try:
+        import requests as _requests
+        response = _requests.post(
+            'https://api.anthropic.com/v1/messages',
+            json={
+                'model': 'claude-haiku-4-5-20251001',
+                'max_tokens': 800,
+                'messages': [{'role': 'user', 'content': prompt}],
+            },
+            headers={
+                'Content-Type': 'application/json',
+                'x-api-key': api_key,
+                'anthropic-version': '2023-06-01',
+            },
+            timeout=30,
+        )
+        response.raise_for_status()
+        return response.json()['content'][0]['text'].strip()
+    except Exception as e:
+        print(f'  WARNING: Executive summary generation failed: {e}')
+        return ''
+
+
+def add_executive_summary_section(doc, summary_text: str):
+    """
+    Write the executive summary as a shaded box at the top of the document.
+    """
+    h = doc.add_heading('本周执行摘要', level=1)
+    h.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    _set_para_font(h)
+
+    # Light blue shaded paragraph block
+    for para_text in summary_text.split('\n'):
+        para_text = para_text.strip()
+        if not para_text:
+            continue
+        p = doc.add_paragraph()
+        p.paragraph_format.space_before = Pt(2)
+        p.paragraph_format.space_after = Pt(6)
+        p.paragraph_format.left_indent = Inches(0.15)
+
+        # Add subtle left-border shading via paragraph XML
+        pPr = p._p.get_or_add_pPr()
+        pBdr = OxmlElement('w:pBdr')
+        left = OxmlElement('w:left')
+        left.set(qn('w:val'), 'single')
+        left.set(qn('w:sz'), '24')
+        left.set(qn('w:space'), '6')
+        left.set(qn('w:color'), '4472C4')
+        pBdr.append(left)
+        pPr.append(pBdr)
+
+        run = p.add_run(para_text)
+        set_run_font(run, font_size=10)
+
+    doc.add_paragraph('')
+
+
 def _funding_priority(event: dict) -> tuple:
     """Return (label, fill_hex) for VC prioritization based on funding stage.
 

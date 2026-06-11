@@ -32,6 +32,8 @@ from tools.generate_word_doc import (
     convert_bullets_to_paragraph,
     set_run_font,
     _set_para_font,
+    generate_executive_summary,
+    add_executive_summary_section,
     FONT_ENGLISH,
     FONT_CHINESE,
 )
@@ -425,6 +427,12 @@ def generate_ai_doc(
         total_str += f"（另有 {len(funding_articles)} 篇移至融资动态）"
     doc.add_paragraph(f"文章总数：{total_str}")
     doc.add_paragraph("")
+
+    if claude_key:
+        print("Generating executive summary...")
+        exec_summary = generate_executive_summary(claude_key, regular_articles)
+        if exec_summary:
+            add_executive_summary_section(doc, exec_summary)
 
     print("Creating grouped news table...")
     create_grouped_news_table(doc, regular_articles, chinese_only, translate, claude_key)
