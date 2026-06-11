@@ -229,12 +229,12 @@ def translate_to_chinese_claude(api_key: str, text: str) -> str:
         }
 
         payload = {
-            "model": "claude-sonnet-4-20250514",
-            "max_tokens": 500,
+            "model": "claude-haiku-4-5-20251001",
+            "max_tokens": 1024,
             "messages": [
                 {
                     "role": "user",
-                    "content": f"Translate the following text to Simplified Chinese. Only output the translation, nothing else.\n\n{text}"
+                    "content": f"将以下文本翻译成简体中文。只输出翻译结果，不要其他说明。\n\n{text}"
                 }
             ]
         }
