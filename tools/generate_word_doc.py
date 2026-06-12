@@ -661,16 +661,9 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
             run = company_para.add_run(company)
             set_run_font(run, font_size=9)
 
-        # Col 2: priority badge with background shading
-        label, fill_hex = _funding_priority(event)
-        priority_cell = row_cells[2]
-        tcPr = priority_cell._tc.get_or_add_tcPr()
-        shd = OxmlElement('w:shd')
-        shd.set(qn('w:val'), 'clear')
-        shd.set(qn('w:color'), 'auto')
-        shd.set(qn('w:fill'), fill_hex)
-        tcPr.append(shd)
-        priority_run = priority_cell.paragraphs[0].add_run(label)
+        # Col 2: priority label (no background colour)
+        label, _ = _funding_priority(event)
+        priority_run = row_cells[2].paragraphs[0].add_run(label)
         priority_run.bold = True
         set_run_font(priority_run, font_size=9)
 
