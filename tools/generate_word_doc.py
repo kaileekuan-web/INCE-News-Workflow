@@ -981,16 +981,14 @@ def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
         add_formatted_text(body, summary_text, font_size=10)
     elif translate and claude_key:
         chinese = translate_to_chinese_claude(claude_key, summary_text)
-        if chinese:
-            cn_para = cell.add_paragraph()
-            cn_para.paragraph_format.space_before = Pt(0)
-            cn_para.paragraph_format.space_after = Pt(3)
-            add_formatted_text(cn_para, chinese, font_size=10)
-            time.sleep(0.5)
-        en_para = cell.add_paragraph()
-        en_para.paragraph_format.space_before = Pt(0)
-        en_para.paragraph_format.space_after = Pt(4)
-        add_formatted_text(en_para, summary_text, font_size=10)
+        if not chinese:
+            time.sleep(2)
+            chinese = translate_to_chinese_claude(claude_key, summary_text)
+        body = cell.add_paragraph()
+        body.paragraph_format.space_before = Pt(0)
+        body.paragraph_format.space_after = Pt(4)
+        add_formatted_text(body, chinese if chinese else summary_text, font_size=10)
+        time.sleep(0.5)
     else:
         body = cell.add_paragraph()
         body.paragraph_format.space_before = Pt(0)
