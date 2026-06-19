@@ -87,7 +87,6 @@ def get_gmail_service():
 
     # ── Load token ────────────────────────────────────────────────────────────
     token_json_env = os.environ.get("GMAIL_TOKEN_JSON")
-    print(f"  DEBUG: GMAIL_TOKEN_JSON set = {bool(token_json_env)}, TEST_VAR = {os.environ.get('TEST_VAR', 'NOT FOUND')}")
 
     if token_json_env:
         # Write env var content to a temp file so Credentials can read it
