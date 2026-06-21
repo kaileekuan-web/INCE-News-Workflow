@@ -980,10 +980,12 @@ def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
         body.paragraph_format.space_after = Pt(4)
         add_formatted_text(body, summary_text, font_size=10)
     elif translate and claude_key:
-        chinese = translate_to_chinese_claude(claude_key, summary_text)
-        if not chinese:
-            time.sleep(2)
+        chinese = None
+        for attempt in range(3):
             chinese = translate_to_chinese_claude(claude_key, summary_text)
+            if chinese:
+                break
+            time.sleep(3 * (attempt + 1))
         body = cell.add_paragraph()
         body.paragraph_format.space_before = Pt(0)
         body.paragraph_format.space_after = Pt(4)
