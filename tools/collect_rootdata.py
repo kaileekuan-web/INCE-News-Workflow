@@ -117,6 +117,7 @@ def _make_driver() -> webdriver.Chrome:
 
     # Prefer undetected-chromedriver — bypasses Cloudflare/bot detection that blocks headless Selenium
     try:
+        import subprocess as _sp
         import undetected_chromedriver as uc  # pip install undetected-chromedriver
         opts = uc.ChromeOptions()
         opts.add_argument("--headless=new")
@@ -125,9 +126,22 @@ def _make_driver() -> webdriver.Chrome:
         opts.add_argument("--window-size=1920,1080")
         if chrome_bin:
             opts.binary_location = chrome_bin
+
+        # Detect Chromium major version so uc doesn't guess wrong
+        version_main = None
+        try:
+            bin_path = chrome_bin or "chromium"
+            out = _sp.check_output([bin_path, "--version"], text=True, stderr=_sp.DEVNULL)
+            version_main = int(out.strip().split()[-1].split(".")[0])
+            print(f"  Detected Chromium version: {version_main}")
+        except Exception:
+            pass
+
         kwargs = {"options": opts, "use_subprocess": True}
         if chromedriver_path:
             kwargs["driver_executable_path"] = chromedriver_path
+        if version_main:
+            kwargs["version_main"] = version_main
         print("  Using undetected-chromedriver (bot-detection bypass)")
         return uc.Chrome(**kwargs)
     except ImportError:
