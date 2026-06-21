@@ -230,7 +230,7 @@ def translate_to_chinese_claude(api_key: str, text: str) -> str:
 
         payload = {
             "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 1024,
+            "max_tokens": 2048,
             "messages": [
                 {
                     "role": "user",
@@ -239,7 +239,7 @@ def translate_to_chinese_claude(api_key: str, text: str) -> str:
             ]
         }
 
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
+        response = requests.post(url, json=payload, headers=headers, timeout=60)
         response.raise_for_status()
 
         result = response.json()
