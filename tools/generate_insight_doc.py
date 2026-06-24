@@ -244,8 +244,40 @@ LABELS_ZH = {
 DEAL_HEADERS_ZH = ["公司", "轮次", "主题契合度", "关注原因", "融资额"]
 
 
+def _translate_single(text: str, api_key: str) -> str:
+    """Translate a single text string to Chinese. Returns original on failure."""
+    if not text:
+        return text
+    url = "https://api.anthropic.com/v1/messages"
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+    payload = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 4096,
+        "messages": [{"role": "user", "content":
+            "将以下文本翻译成简体中文。公司名、人名保持英文。只输出翻译结果，不要其他说明。\n\n" + text}],
+    }
+    for attempt in range(3):
+        try:
+            resp = requests.post(url, json=payload, headers=headers, timeout=120)
+            resp.raise_for_status()
+            result = resp.json()["content"][0]["text"].strip()
+            if result:
+                return result
+        except Exception as e:
+            if attempt == 2:
+                print(f"  WARNING: Translation failed: {e} — using original")
+                return text
+        time.sleep(4 * (attempt + 1))
+    return text
+
+
 def _batch_translate(texts: dict, api_key: str) -> dict:
-    """Translate a dict of {key: english_text} to Chinese in one API call."""
+    """Translate a dict of SHORT {key: english_text} fields to Chinese in one API call.
+    Only use for short fields (theme, insight, rationale) — NOT long paragraphs."""
     prompt = (
         "将以下 JSON 中所有字符串值翻译成简体中文。"
         "保留 JSON 结构和键名不变。公司名、人名保持英文。只输出 JSON，不要其他内容。\n\n"
@@ -259,12 +291,12 @@ def _batch_translate(texts: dict, api_key: str) -> dict:
     }
     payload = {
         "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 4096,
+        "max_tokens": 2048,
         "messages": [{"role": "user", "content": prompt}],
     }
     for attempt in range(3):
         try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=90)
+            resp = requests.post(url, json=payload, headers=headers, timeout=60)
             resp.raise_for_status()
             text = resp.json()["content"][0]["text"].strip()
             if "```" in text:
@@ -276,7 +308,7 @@ def _batch_translate(texts: dict, api_key: str) -> dict:
             if attempt == 2:
                 print(f"  WARNING: Batch translation failed: {e} — using English")
                 return texts
-            time.sleep(3 * (attempt + 1))
+            time.sleep(4 * (attempt + 1))
     return texts
 
 
@@ -289,30 +321,34 @@ def generate_insight_doc(memos_path: str, deals_path: str,
     with open(memos_path, encoding="utf-8") as f:
         memos = json.load(f)
 
-    # Translate all memo text in one batch per theme
+    # Translate all memo text per theme:
+    # - Short fields (theme/insight/rationale) in one batch call
+    # - Long fields (bull/bear/partner) individually to avoid JSON truncation
     if zh and api_key:
         print("Translating themes to Chinese...")
         translated_memos = []
         for i, memo in enumerate(memos):
-            print(f"  Translating theme {i+1}/{len(memos)}: {memo.get('theme', '')}")
-            texts = {
+            print(f"  Translating theme {i+1}/{len(memos)}: {memo.get('theme', '')[:60]}")
+            debate = memo.get("debate", {})
+
+            # Batch the short fields
+            short = _batch_translate({
                 "theme":    memo.get("theme", ""),
                 "insight":  memo.get("insight", ""),
                 "rationale": memo.get("rationale", ""),
-                "bull":     memo.get("debate", {}).get("bull", ""),
-                "bear":     memo.get("debate", {}).get("bear", ""),
-                "partner":  memo.get("debate", {}).get("partner", ""),
-            }
-            translated = _batch_translate(texts, api_key)
+            }, api_key)
+            time.sleep(1)
+
+            # Translate long debate fields individually
+            bull    = _translate_single(debate.get("bull", ""),    api_key); time.sleep(1)
+            bear    = _translate_single(debate.get("bear", ""),    api_key); time.sleep(1)
+            partner = _translate_single(debate.get("partner", ""), api_key); time.sleep(1)
+
             m = dict(memo)
-            m["theme"]    = translated.get("theme", memo.get("theme", ""))
-            m["insight"]  = translated.get("insight", memo.get("insight", ""))
-            m["rationale"] = translated.get("rationale", memo.get("rationale", ""))
-            m["debate"] = {
-                "bull":    translated.get("bull", memo.get("debate", {}).get("bull", "")),
-                "bear":    translated.get("bear", memo.get("debate", {}).get("bear", "")),
-                "partner": translated.get("partner", memo.get("debate", {}).get("partner", "")),
-            }
+            m["theme"]     = short.get("theme",    memo.get("theme", ""))
+            m["insight"]   = short.get("insight",  memo.get("insight", ""))
+            m["rationale"] = short.get("rationale", memo.get("rationale", ""))
+            m["debate"]    = {"bull": bull, "bear": bear, "partner": partner}
             translated_memos.append(m)
         memos = translated_memos
 
@@ -322,13 +358,11 @@ def generate_insight_doc(memos_path: str, deals_path: str,
             deals = json.load(f)
         if zh and api_key and deals:
             print("Translating deal sourcing to Chinese...")
-            texts = {str(i): {"thesis_fit": d.get("thesis_fit",""), "why_now": d.get("why_now","")}
-                     for i, d in enumerate(deals)}
-            translated = _batch_translate(texts, api_key)
-            for i, deal in enumerate(deals):
-                t = translated.get(str(i), {})
-                deal["thesis_fit"] = t.get("thesis_fit", deal.get("thesis_fit", ""))
-                deal["why_now"]    = t.get("why_now",    deal.get("why_now", ""))
+            for deal in deals:
+                deal["thesis_fit"] = _translate_single(deal.get("thesis_fit", ""), api_key)
+                time.sleep(1)
+                deal["why_now"] = _translate_single(deal.get("why_now", ""), api_key)
+                time.sleep(1)
 
     doc = Document()
 

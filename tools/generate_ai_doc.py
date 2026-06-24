@@ -305,8 +305,13 @@ def create_grouped_news_table(
             title = article.get("title", "无标题")
             # Translate title to Chinese when in chinese-only or translate mode
             if (chinese_only or translate) and claude_key:
-                title = translate_to_chinese_claude(claude_key, title) or title
-                time.sleep(0.2)
+                for attempt in range(3):
+                    t = translate_to_chinese_claude(claude_key, title)
+                    if t:
+                        title = t
+                        break
+                    time.sleep(4 * (attempt + 1))
+                time.sleep(0.3)
             url = article.get("url", "")
             if url:
                 add_hyperlink(summary_para, url, title)
@@ -321,16 +326,23 @@ def create_grouped_news_table(
             set_run_font(summary_para.add_run("\n\n"), font_size=10)
 
             if chinese_only and claude_key:
-                chinese = translate_to_chinese_claude(claude_key, summary_text)
+                chinese = None
+                for attempt in range(3):
+                    chinese = translate_to_chinese_claude(claude_key, summary_text)
+                    if chinese:
+                        break
+                    time.sleep(4 * (attempt + 1))
                 add_formatted_text(summary_para, chinese or summary_text, font_size=10)
-                time.sleep(0.2)
+                time.sleep(0.5)
             elif translate and claude_key:
-                chinese = translate_to_chinese_claude(claude_key, summary_text)
-                if chinese:
-                    add_formatted_text(summary_para, chinese, font_size=10)
-                    time.sleep(0.3)
-                set_run_font(summary_para.add_run("\n\n"), font_size=10)
-                add_formatted_text(summary_para, summary_text, font_size=10)
+                chinese = None
+                for attempt in range(3):
+                    chinese = translate_to_chinese_claude(claude_key, summary_text)
+                    if chinese:
+                        break
+                    time.sleep(4 * (attempt + 1))
+                add_formatted_text(summary_para, chinese or summary_text, font_size=10)
+                time.sleep(0.5)
             else:
                 add_formatted_text(summary_para, summary_text, font_size=10)
 
