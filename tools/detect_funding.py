@@ -364,8 +364,7 @@ def extract_funding_with_claude(api_key: str, articles: List[Dict]) -> List[Dict
             if not isinstance(event, dict) or not event.get('company'):
                 continue
 
-            # Normalize null fields to '不详' — the Word doc table and merge logic
-            # treat this sentinel as "unknown", same as what the OpenAI web search returns.
+            # Normalize None → '不详' to match the rest of the pipeline
             for field in ('stage', 'raise', 'valuation', 'investors'):
                 if event.get(field) is None:
                     event[field] = '不详'

@@ -26,6 +26,21 @@
     </div>
   </div>
 
+  <!-- Language -->
+  <div>
+    <label class="block text-xs font-semibold text-gray-600 mb-2 uppercase tracking-wide">Output Language</label>
+    <div class="flex gap-6">
+      <label class="flex items-center gap-2 text-sm cursor-pointer">
+        <input type="radio" name="language" value="en" checked class="accent-purple-600" />
+        <span>English</span>
+      </label>
+      <label class="flex items-center gap-2 text-sm cursor-pointer">
+        <input type="radio" name="language" value="zh" class="accent-purple-600" />
+        <span>Chinese (Mandarin) <span class="text-gray-400">— adds ~3 min for translation</span></span>
+      </label>
+    </div>
+  </div>
+
   <!-- What this does -->
   <div class="bg-purple-50 border border-purple-100 rounded-lg p-4 text-xs text-purple-800 space-y-1">
     <div class="font-semibold mb-1">Pipeline (7 steps, ~15-20 min):</div>
@@ -146,6 +161,7 @@
     const payload = {
       start_date: document.getElementById('start_date').value,
       end_date:   document.getElementById('end_date').value,
+      language:   document.querySelector('input[name="language"]:checked').value,
     };
 
     try {

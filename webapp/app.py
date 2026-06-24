@@ -250,7 +250,8 @@ def run_insights():
     job_id, _ = _new_job()
     threading.Thread(
         target=_pipeline_insights,
-        args=(job_id, data.get("start_date"), data.get("end_date")),
+        args=(job_id, data.get("start_date"), data.get("end_date"),
+              data.get("language", "en")),
         daemon=True,
     ).start()
     return jsonify({"job_id": job_id})
@@ -690,7 +691,7 @@ def _pipeline_crypto(job_id, start_date, end_date, min_amount):
         jobs[job_id]["queue"].put(None)
 
 
-def _pipeline_insights(job_id, start_date, end_date):
+def _pipeline_insights(job_id, start_date, end_date, language="en"):
     try:
         tmp = TMP_DIR / job_id
         tmp.mkdir(parents=True, exist_ok=True)
@@ -781,6 +782,7 @@ print(f'Deduped: {{len(unique)}} articles')
             "--start_date", start_date,
             "--end_date", end_date,
             "--output_dir", str(out),
+            "--language", language,
         ])
         if rc == -1: return
         if rc != 0:
@@ -788,7 +790,8 @@ print(f'Deduped: {{len(unique)}} articles')
 
         s = start_date.replace("-", "")
         e = end_date.replace("-", "")
-        expected = out / f"Investment_Intelligence_{s}_{e}.docx"
+        lang_suffix = "_ZH" if language == "zh" else ""
+        expected = out / f"Investment_Intelligence_{s}_{e}{lang_suffix}.docx"
         docx_files = sorted(out.glob("*.docx"), key=lambda p: p.stat().st_mtime, reverse=True)
         output_file = str(expected) if expected.exists() else (str(docx_files[0]) if docx_files else None)
 

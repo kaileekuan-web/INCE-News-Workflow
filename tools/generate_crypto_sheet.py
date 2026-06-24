@@ -145,12 +145,16 @@ def main():
     parser.add_argument("--output_dir", default="output", help="Output directory")
     args = parser.parse_args()
 
-    generate_crypto_sheet(
-        input_file=args.input,
-        start_date=args.start_date,
-        end_date=args.end_date,
-        output_dir=args.output_dir,
-    )
+    try:
+        generate_crypto_sheet(
+            input_file=args.input,
+            start_date=args.start_date,
+            end_date=args.end_date,
+            output_dir=args.output_dir,
+        )
+    except Exception as e:
+        print(f"ERROR: {e}")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

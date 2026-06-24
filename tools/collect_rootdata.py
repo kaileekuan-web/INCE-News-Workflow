@@ -213,8 +213,17 @@ def _wait_for_rows(driver: webdriver.Chrome, timeout: int = 20) -> list:
                 EC.presence_of_element_located((By.CSS_SELECTOR, sel))
             )
             rows = driver.find_elements(By.CSS_SELECTOR, sel)
-            if rows:
-                return rows
+            # Only return rows that have actual text content — skeleton loaders match
+            # the CSS selector but have no text yet.
+            content_rows = []
+            for r in rows:
+                try:
+                    if r.text.strip():
+                        content_rows.append(r)
+                except Exception:
+                    pass
+            if content_rows:
+                return content_rows
         except TimeoutException:
             continue
     return []
@@ -366,6 +375,9 @@ def extract_row(row) -> dict | None:
     try:
         cells = row.find_elements(By.TAG_NAME, "td")
         if len(cells) < 6:
+            # Fallback: div-based table layout (RootData sometimes renders without <td>)
+            cells = row.find_elements(By.XPATH, "./div")
+        if len(cells) < 6:
             return None
 
         # Company name + URL
@@ -441,14 +453,44 @@ def extract_row(row) -> dict | None:
         return None
 
 
-def scrape_current_page(driver: webdriver.Chrome) -> list[dict]:
+def scrape_current_page(driver: webdriver.Chrome, debug_output: str = "") -> list[dict]:
     """Extract all deal rows from the currently visible table page."""
     rows = _wait_for_rows(driver, timeout=15)
+    if not rows:
+        if debug_output:
+            try:
+                with open(debug_output, "w", encoding="utf-8") as fh:
+                    fh.write(driver.page_source)
+                print(f"    [debug] No rows found — page source saved to {debug_output}")
+            except Exception:
+                pass
+        return []
+
+    # Show first-row structure so we can diagnose layout changes
+    try:
+        r0 = rows[0]
+        tds = r0.find_elements(By.TAG_NAME, "td")
+        divs = r0.find_elements(By.XPATH, "./div")
+        print(f"    [debug] {len(rows)} rows found; first row: "
+              f"tag={r0.tag_name}, td={len(tds)}, child-div={len(divs)}, "
+              f"text={repr(r0.text[:80])}")
+    except Exception:
+        pass
+
     deals = []
     for row in rows:
         deal = extract_row(row)
         if deal and deal["company"]:
             deals.append(deal)
+
+    if not deals and debug_output:
+        try:
+            with open(debug_output, "w", encoding="utf-8") as fh:
+                fh.write(driver.page_source)
+            print(f"    [debug] Rows found but none extracted — page source saved to {debug_output}")
+        except Exception:
+            pass
+
     return deals
 
 
@@ -515,9 +557,16 @@ def collect_rootdata(
     filters_applied = False
 
     try:
+        debug_html = os.path.join(os.path.dirname(output) or ".", "debug_rootdata_page.html")
+
         print(f"Opening {BASE_URL}...")
         driver.get(BASE_URL)
         print("  Waiting for page to render...")
+        # Initial wait; scroll mid-page to trigger lazy-loaded content
+        time.sleep(3)
+        driver.execute_script("window.scrollTo(0, document.body.scrollHeight / 2);")
+        time.sleep(1)
+        driver.execute_script("window.scrollTo(0, 0);")
         _wait_for_rows(driver, timeout=20)
 
         # Detect bot-block: Cloudflare challenge or empty page
@@ -536,7 +585,7 @@ def collect_rootdata(
         page = 1
         while page <= MAX_PAGES:
             print(f"  Scraping page {page}...")
-            deals = scrape_current_page(driver)
+            deals = scrape_current_page(driver, debug_output=debug_html if page == 1 else "")
 
             if not deals:
                 print("  No rows found on this page — stopping.")
