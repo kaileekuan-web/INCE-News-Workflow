@@ -183,6 +183,12 @@ def crypto():
     return render_template("crypto.html", default_start=start, default_end=end)
 
 
+@app.route("/insights")
+def insights():
+    start, end = _default_dates()
+    return render_template("insights.html", default_start=start, default_end=end)
+
+
 # ── Run endpoints ──────────────────────────────────────────────────────────────
 
 @app.route("/run/ai_news", methods=["POST"])
@@ -233,6 +239,18 @@ def run_crypto():
         target=_pipeline_crypto,
         args=(job_id, data.get("start_date"), data.get("end_date"),
               float(data.get("min_amount", 10))),
+        daemon=True,
+    ).start()
+    return jsonify({"job_id": job_id})
+
+
+@app.route("/run/insights", methods=["POST"])
+def run_insights():
+    data = request.json or {}
+    job_id, _ = _new_job()
+    threading.Thread(
+        target=_pipeline_insights,
+        args=(job_id, data.get("start_date"), data.get("end_date")),
         daemon=True,
     ).start()
     return jsonify({"job_id": job_id})
@@ -662,6 +680,124 @@ def _pipeline_crypto(job_id, start_date, end_date, min_amount):
             _log(job_id, "✓ Done! File ready for download.")
         else:
             raise RuntimeError("Output .xlsx not found after generation")
+
+    except Exception as exc:
+        if jobs[job_id]["status"] == "running":
+            jobs[job_id]["status"] = "error"
+        jobs[job_id]["error"] = str(exc)
+        _log(job_id, f"ERROR: {exc}")
+    finally:
+        jobs[job_id]["queue"].put(None)
+
+
+def _pipeline_insights(job_id, start_date, end_date):
+    try:
+        tmp = TMP_DIR / job_id
+        tmp.mkdir(parents=True, exist_ok=True)
+        out = OUTPUT_DIR / job_id
+        out.mkdir(parents=True, exist_ok=True)
+        py = sys.executable
+
+        # Phase 1: Collect TechCrunch
+        _log(job_id, "=== [1/7] Collecting TechCrunch ===")
+        tc_out = tmp / "raw_techcrunch.json"
+        if _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "collect_techcrunch.py"),
+            "--start_date", start_date, "--end_date", end_date,
+            "--output", str(tc_out),
+        ]) == -1: return
+
+        # Phase 2: Collect TLDR
+        _log(job_id, "=== [2/7] Collecting TLDR newsletters ===")
+        if _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "collect_tldr.py"),
+            "--start_date", start_date, "--end_date", end_date,
+            "--output_dir", str(tmp),
+        ]) == -1: return
+
+        # Phase 3: Deduplicate
+        _log(job_id, "=== [3/7] Deduplicating articles ===")
+        classified = tmp / "classified_articles.json"
+        dedup_script = f"""
+import json, pathlib
+files = ['{tmp}/raw_techcrunch.json', '{tmp}/raw_tldr_ai.json', '{tmp}/raw_tldr_main.json']
+all_a = []
+for f in files:
+    p = pathlib.Path(f)
+    if p.exists():
+        all_a += json.loads(p.read_text())
+seen, unique = set(), []
+for a in all_a:
+    url = a.get('url', '')
+    if url and url not in seen:
+        seen.add(url); unique.append(a)
+pathlib.Path('{classified}').write_text(json.dumps(unique, ensure_ascii=False, indent=2))
+print(f'Deduped: {{len(unique)}} articles')
+"""
+        if _run_cmd(job_id, [py, "-c", dedup_script]) == -1: return
+
+        # Phase 4: Summarize
+        _log(job_id, "=== [4/7] Summarizing articles with Claude ===")
+        summarized = tmp / "summarized_articles.json"
+        if _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "summarize_articles.py"),
+            "--provider", "claude",
+            "--input", str(classified),
+            "--output", str(summarized),
+            "--yes",
+        ]) == -1: return
+
+        # Phase 5: Generate insights
+        _log(job_id, "=== [5/7] Generating investment insights ===")
+        insights_out = tmp / "insights.json"
+        if _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "generate_insights.py"),
+            "--input", str(summarized),
+            "--output", str(insights_out),
+        ]) == -1: return
+
+        # Phase 6: Multi-agent debate
+        _log(job_id, "=== [6/7] Running bull / bear / partner debate ===")
+        memos_out = tmp / "debate_memos.json"
+        if _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "debate_agent.py"),
+            "--input", str(insights_out),
+            "--output", str(memos_out),
+        ]) == -1: return
+
+        # Phase 7: Deal sourcing + generate doc
+        _log(job_id, "=== [7/7] Sourcing deals + generating report ===")
+        deals_out = tmp / "deal_sourcing.json"
+        _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "source_deals.py"),
+            "--input", str(memos_out),
+            "--output", str(deals_out),
+        ])  # non-fatal if this fails
+
+        rc = _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "generate_insight_doc.py"),
+            "--memos", str(memos_out),
+            "--deals", str(deals_out),
+            "--start_date", start_date,
+            "--end_date", end_date,
+            "--output_dir", str(out),
+        ])
+        if rc == -1: return
+        if rc != 0:
+            raise RuntimeError("generate_insight_doc.py failed")
+
+        s = start_date.replace("-", "")
+        e = end_date.replace("-", "")
+        expected = out / f"Investment_Intelligence_{s}_{e}.docx"
+        docx_files = sorted(out.glob("*.docx"), key=lambda p: p.stat().st_mtime, reverse=True)
+        output_file = str(expected) if expected.exists() else (str(docx_files[0]) if docx_files else None)
+
+        if output_file:
+            jobs[job_id]["status"] = "done"
+            jobs[job_id]["output_file"] = output_file
+            _log(job_id, "✓ Done! Investment Intelligence report ready.")
+        else:
+            raise RuntimeError("Output .docx not found after generation")
 
     except Exception as exc:
         if jobs[job_id]["status"] == "running":

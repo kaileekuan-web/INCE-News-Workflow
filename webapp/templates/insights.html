@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+{% set active = "insights" %}
+{% block title %}Investment Insights — INCE{% endblock %}
+
+{% block content %}
+<h1 class="text-2xl font-bold text-gray-800 mb-1">Investment Intelligence</h1>
+<p class="text-sm text-gray-500 mb-8">
+  Clusters this week's news into investment themes, runs a
+  <strong>bull / bear / partner</strong> debate on each, then surfaces
+  <strong>top 5 companies</strong> to source.
+</p>
+
+<!-- Form -->
+<form id="form" class="space-y-6 bg-white border border-gray-200 rounded-xl p-6 shadow-sm">
+
+  <div class="grid grid-cols-2 gap-4">
+    <div>
+      <label class="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">Start Date</label>
+      <input type="date" id="start_date" name="start_date" value="{{ default_start }}"
+             class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" />
+    </div>
+    <div>
+      <label class="block text-xs font-semibold text-gray-600 mb-1 uppercase tracking-wide">End Date</label>
+      <input type="date" id="end_date" name="end_date" value="{{ default_end }}"
+             class="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-purple-500" />
+    </div>
+  </div>
+
+  <!-- What this does -->
+  <div class="bg-purple-50 border border-purple-100 rounded-lg p-4 text-xs text-purple-800 space-y-1">
+    <div class="font-semibold mb-1">Pipeline (7 steps, ~15-20 min):</div>
+    <div>1. Collect TechCrunch + TLDR AI + TLDR Main</div>
+    <div>2. Deduplicate articles</div>
+    <div>3. Summarize with Claude</div>
+    <div>4. Cluster into 3–7 investment themes</div>
+    <div>5. Bull / Bear / Partner debate per theme</div>
+    <div>6. Source top 5 companies via web search</div>
+    <div>7. Generate Investment Intelligence Word doc</div>
+  </div>
+
+  <button type="submit" id="run-btn"
+          class="w-full bg-purple-600 hover:bg-purple-700 active:bg-purple-800 text-white
+                 font-semibold py-2.5 px-4 rounded-lg text-sm transition-colors
+                 disabled:opacity-50 disabled:cursor-not-allowed">
+    Generate Intelligence Report
+  </button>
+</form>
+
+<!-- Progress panel -->
+<div id="progress-section" class="hidden mt-8">
+  <div class="flex items-center justify-between mb-2">
+    <h2 class="text-sm font-semibold text-gray-700">Progress</h2>
+    <div class="flex items-center gap-3">
+      <button id="stop-btn"
+              class="hidden text-xs px-3 py-1 rounded-full font-medium
+                     bg-red-100 text-red-700 hover:bg-red-200 transition-colors
+                     disabled:opacity-50 disabled:cursor-not-allowed">
+        Stop
+      </button>
+      <span id="status-badge"
+            class="text-xs px-2.5 py-1 rounded-full font-medium bg-purple-100 text-purple-700">
+        Running…
+      </span>
+    </div>
+  </div>
+
+  <div id="log"
+       class="bg-gray-900 text-green-300 rounded-xl p-4 h-72 overflow-y-auto
+              text-xs font-mono space-y-0.5 border border-gray-800 shadow-inner">
+  </div>
+
+  <div id="download-section" class="hidden mt-4">
+    <a id="download-btn" href="#"
+       class="inline-flex items-center gap-2 bg-purple-600 hover:bg-purple-700
+              text-white font-semibold py-2.5 px-5 rounded-lg text-sm transition-colors shadow-sm">
+      ↓ &nbsp;Download Intelligence Report
+    </a>
+  </div>
+
+  <div id="error-section" class="hidden mt-4 text-sm text-red-600 bg-red-50
+       border border-red-200 rounded-lg p-3">
+    Pipeline failed — see log above for details.
+  </div>
+
+  <div id="stopped-section" class="hidden mt-4 text-sm text-yellow-700 bg-yellow-50
+       border border-yellow-200 rounded-lg p-3">
+    Pipeline stopped by user.
+  </div>
+</div>
+
+<script>
+(function () {
+  const form            = document.getElementById('form');
+  const runBtn          = document.getElementById('run-btn');
+  const progressSection = document.getElementById('progress-section');
+  const logDiv          = document.getElementById('log');
+  const statusBadge     = document.getElementById('status-badge');
+  const downloadSection = document.getElementById('download-section');
+  const downloadBtn     = document.getElementById('download-btn');
+  const errorSection    = document.getElementById('error-section');
+  const stoppedSection  = document.getElementById('stopped-section');
+  const stopBtn         = document.getElementById('stop-btn');
+  let currentJobId      = null;
+
+  function appendLog(msg) {
+    const line = document.createElement('div');
+    line.className = 'log-line';
+    if (msg.startsWith('==='))   { line.style.color = '#a78bfa'; line.style.fontWeight = '600'; }
+    else if (msg.startsWith('ERROR') || msg.startsWith('WARNING')) { line.style.color = '#fca5a5'; }
+    else if (msg.startsWith('✓')) { line.style.color = '#86efac'; line.style.fontWeight = '600'; }
+    line.textContent = msg;
+    logDiv.appendChild(line);
+    logDiv.scrollTop = logDiv.scrollHeight;
+  }
+
+  function resetButtons() {
+    runBtn.disabled = false;
+    runBtn.textContent = 'Generate Intelligence Report';
+    stopBtn.classList.add('hidden');
+    currentJobId = null;
+  }
+
+  stopBtn.addEventListener('click', async () => {
+    if (!currentJobId) return;
+    stopBtn.disabled = true;
+    stopBtn.textContent = 'Stopping…';
+    try { await fetch('/stop/' + currentJobId, { method: 'POST' }); } catch (_) {}
+  });
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    runBtn.disabled = true;
+    runBtn.textContent = 'Running…';
+    stopBtn.classList.remove('hidden');
+    stopBtn.disabled = false;
+    stopBtn.textContent = 'Stop';
+
+    progressSection.classList.remove('hidden');
+    downloadSection.classList.add('hidden');
+    errorSection.classList.add('hidden');
+    stoppedSection.classList.add('hidden');
+    logDiv.innerHTML = '';
+    statusBadge.textContent = 'Running…';
+    statusBadge.className = 'text-xs px-2.5 py-1 rounded-full font-medium bg-purple-100 text-purple-700';
+
+    const payload = {
+      start_date: document.getElementById('start_date').value,
+      end_date:   document.getElementById('end_date').value,
+    };
+
+    try {
+      const res = await fetch('/run/insights', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      ({ job_id: currentJobId } = await res.json());
+    } catch (err) {
+      appendLog('ERROR: Could not start job — ' + err);
+      statusBadge.textContent = 'Error ✗';
+      statusBadge.className = 'text-xs px-2.5 py-1 rounded-full font-medium bg-red-100 text-red-700';
+      resetButtons();
+      return;
+    }
+
+    let reconnectAttempts = 0;
+    function connectStream() {
+      const es = new EventSource('/stream/' + currentJobId);
+      es.onmessage = (ev) => {
+        reconnectAttempts = 0;
+        const msg = ev.data;
+        if (msg === '__DONE__') {
+          es.close();
+          statusBadge.textContent = 'Done ✓';
+          statusBadge.className = 'text-xs px-2.5 py-1 rounded-full font-medium bg-green-100 text-green-700';
+          downloadBtn.href = '/download/' + currentJobId;
+          downloadSection.classList.remove('hidden');
+          resetButtons();
+        } else if (msg === '__STOPPED__') {
+          es.close();
+          statusBadge.textContent = 'Stopped';
+          statusBadge.className = 'text-xs px-2.5 py-1 rounded-full font-medium bg-yellow-100 text-yellow-700';
+          stoppedSection.classList.remove('hidden');
+          resetButtons();
+        } else if (msg === '__ERROR__') {
+          es.close();
+          statusBadge.textContent = 'Error ✗';
+          statusBadge.className = 'text-xs px-2.5 py-1 rounded-full font-medium bg-red-100 text-red-700';
+          errorSection.classList.remove('hidden');
+          resetButtons();
+        } else {
+          appendLog(msg);
+        }
+      };
+      es.onerror = () => {
+        es.close();
+        reconnectAttempts++;
+        if (reconnectAttempts <= 5) {
+          statusBadge.textContent = 'Reconnecting…';
+          statusBadge.className = 'text-xs px-2.5 py-1 rounded-full font-medium bg-yellow-100 text-yellow-700';
+          setTimeout(connectStream, 3000);
+        } else {
+          statusBadge.textContent = 'Connection lost';
+          statusBadge.className = 'text-xs px-2.5 py-1 rounded-full font-medium bg-yellow-100 text-yellow-700';
+          resetButtons();
+        }
+      };
+    }
+    connectStream();
+  });
+}());
+</script>
+{% endblock %}
