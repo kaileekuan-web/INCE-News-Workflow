@@ -1,7 +1,7 @@
 # Collect AI News (Bi-Weekly)
 
 ## Objective
-Collect AI-related news from multiple sources (TechCrunch, TLDR AI, TLDR Main), summarize with Claude, translate summaries to Chinese, and output a formatted Word document with two sections: (1) AI News table and (2) AI Fundraising News table sourced from a live ChatGPT web search.
+Collect AI-related news from multiple sources (TechCrunch, TLDR AI, TLDR Main, X/Twitter), summarize with Claude, translate summaries to Chinese, and output a formatted Word document with two sections: (1) AI News table and (2) AI Fundraising News table sourced from a live ChatGPT web search.
 
 ## Required Inputs
 - **Start date** (YYYY-MM-DD)
@@ -13,13 +13,17 @@ Collect AI-related news from multiple sources (TechCrunch, TLDR AI, TLDR Main), 
 - **Gmail OAuth** setup for TLDR newsletters:
   - `credentials.json` - downloaded from Google Cloud Console
   - `token.json` - auto-generated on first run
+- **X/Twitter source** (no API key required — uses free Nitter RSS):
+  - `x_accounts.txt` - handles + search queries to follow (repo root, editable)
+  - `NITTER_INSTANCES` in `.env` (optional) - comma-separated Nitter instances to override the built-in defaults when they are down
 
 ## Tools Required
 1. `tools/collect_techcrunch.py` - TechCrunch via NewsAPI.org
 2. `tools/collect_tldr.py` - TLDR newsletters via Gmail API (with section filtering)
-3. `tools/summarize_articles.py` - Fetch full content and generate summaries via Claude
-4. `tools/generate_word_doc.py` - Word document generation with translation and funding section
-5. `tools/utils.py` - Shared utilities (imported by other tools)
+3. `tools/collect_x.py` - X/Twitter posts via Nitter RSS (accounts + searches from `x_accounts.txt`)
+4. `tools/summarize_articles.py` - Fetch full content and generate summaries via Claude
+5. `tools/generate_word_doc.py` - Word document generation with translation and funding section
+6. `tools/utils.py` - Shared utilities (imported by other tools)
 
 ## Steps
 
@@ -58,6 +62,17 @@ Collect AI-related news from multiple sources (TechCrunch, TLDR AI, TLDR Main), 
    - First run requires OAuth browser authentication
    - Expected: 20-35 AI articles, 40-70 Main articles per 2-week range
 
+4b. **Collect X/Twitter posts:**
+   ```bash
+   python tools/collect_x.py --start_date 2026-01-08 --end_date 2026-01-24
+   ```
+   - Output: `.tmp/raw_x.json`
+   - Reads accounts + search queries from `x_accounts.txt` (edit that file to change who we follow)
+   - Uses **free Nitter RSS** — no API key. Account timelines are reliable; Nitter search is often disabled (funding `search:` lines are best-effort)
+   - Full tweet text is captured into `content`/`description` so the summarizer can score it without scraping x.com (which is blocked)
+   - Retweets are skipped; posts are filtered to the date range
+   - Expected: 50-150 posts per 2-week range, but **0 is possible if all Nitter instances are down/rate-limited** — that's expected, not a failure. Re-run later or set `NITTER_INSTANCES` in `.env`
+
 ### Phase 3: Deduplication
 
 5. **Deduplicate articles** (inline Python — no dedicated script):
@@ -67,8 +82,10 @@ Collect AI-related news from multiple sources (TechCrunch, TLDR AI, TLDR Main), 
    with open('.tmp/raw_tldr_ai.json') as f: tldr_ai = json.load(f)
    with open('.tmp/raw_tldr_main.json') as f: tldr_main = json.load(f)
    with open('.tmp/raw_techcrunch.json') as f: techcrunch = json.load(f)
+   import os
+   x_posts = json.load(open('.tmp/raw_x.json')) if os.path.exists('.tmp/raw_x.json') else []
 
-   all_articles = tldr_ai + tldr_main + techcrunch
+   all_articles = tldr_ai + tldr_main + techcrunch + x_posts
    seen, unique = set(), []
    for a in all_articles:
        url = a.get('url', '')
@@ -139,6 +156,7 @@ Collect AI-related news from multiple sources (TechCrunch, TLDR AI, TLDR Main), 
 - `raw_techcrunch.json` - TechCrunch articles
 - `raw_tldr_ai.json` - TLDR AI newsletter items (filtered to "Headlines & Launches" only)
 - `raw_tldr_main.json` - TLDR Main newsletter items ("Big Tech & Startups" + "Miscellaneous" only)
+- `raw_x.json` - X/Twitter posts collected via Nitter RSS (source `X/Twitter`)
 - `classified_articles.json` - Deduplicated articles combined from all sources
 - `summarized_articles.json` - Articles with Claude-generated summaries
 
@@ -245,7 +263,7 @@ After each run, verify:
 # Check each source individually
 python tools/collect_techcrunch.py --start_date 2026-01-08 --end_date 2026-01-24
 python tools/collect_tldr.py --start_date 2026-01-08 --end_date 2026-01-24
-python tools/collect_substack.py --start_date 2026-01-08 --end_date 2026-01-24
+python tools/collect_x.py --start_date 2026-01-08 --end_date 2026-01-24
 
 # Verify .tmp/ files created and contain data
 ls -lh .tmp/
@@ -294,7 +312,15 @@ cat .tmp/summarized_articles.json | jq '.[0]'
 
 ## Lessons Learned
 
-### 2026-06-06 Update (current)
+### 2026-07-07 Update (current)
+- **X/Twitter added as a source** via `collect_x.py`. X has no free/reliable API and blocks scraping, so collection goes through **Nitter RSS** (free, no key).
+  - Follow list lives in `x_accounts.txt` (repo root): `handle` lines for account timelines, `search: QUERY` lines for tweet searches. Curated defaults cover AI labs, founders/researchers, and VCs/investors.
+  - Account timelines are the reliable path. **Nitter search is frequently disabled** on public instances, so the `search:` (trending/funding) lines are best-effort and often return nothing.
+  - Public Nitter instances rot constantly. The collector tries several in order (`nitter.net`, `nitter.poast.org`, `nitter.privacydev.net`, `lightbrd.com`) and reuses the first that works. Override with `NITTER_INSTANCES` in `.env` when defaults die. **A run returning 0 posts is expected when instances are down — not a bug.**
+  - Full tweet text is captured into `content`/`description` at collection time. `summarize_articles.py` was updated so X posts **with captured text are summarized/scored normally** (fetch is skipped, since x.com can't be scraped); only X links with no captured text fall back to the old description-only behavior. This means tweets now get category/relevance/vc_signal scores and respect `--min-signal`.
+  - Retweets (Nitter `RT by @...`) are skipped; replies are kept (down-ranked by relevance scoring).
+
+### 2026-06-06 Update
 - **VC signal scoring**: `summarize_articles.py` now scores each article 1-5 on VC investment value (not just AI practitioner value) and classifies a `vc_signal` type: `funding`, `product`, `partnership`, `hire`, `regulatory`, `research`, `other`
   - Scores appear as the 优先级 column in the Word doc
   - Signal type appears as a colored badge next to the article title (e.g., `[融资]` in blue)
@@ -348,16 +374,18 @@ cat .tmp/summarized_articles.json | jq '.[0]'
    # Phase 2: Collection (run in parallel)
    python tools/collect_techcrunch.py --start_date $START_DATE --end_date $END_DATE &
    python tools/collect_tldr.py --start_date $START_DATE --end_date $END_DATE &
+   python tools/collect_x.py --start_date $START_DATE --end_date $END_DATE &
    wait
 
    # Phase 3: Deduplication (inline)
    python3 -c "
-   import json
+   import json, os
    ai = json.load(open('.tmp/raw_tldr_ai.json'))
    main = json.load(open('.tmp/raw_tldr_main.json'))
    tc = json.load(open('.tmp/raw_techcrunch.json'))
+   x = json.load(open('.tmp/raw_x.json')) if os.path.exists('.tmp/raw_x.json') else []
    seen, unique = set(), []
-   for a in ai + main + tc:
+   for a in ai + main + tc + x:
        url = a.get('url', '')
        if url and url not in seen:
            seen.add(url); unique.append(a)

@@ -3,7 +3,7 @@
 Fetch full article content and generate bullet point summaries using AI
 
 Supports:
-- Claude (Anthropic) - claude-sonnet-4-20250514
+- Claude (Anthropic) - claude-haiku-4-5-20251001
 - Google Gemini (FREE - 1500 requests/day)
 - OpenAI GPT (Paid - requires payment method)
 
@@ -508,7 +508,7 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
             print("On Railway: add ANTHROPIC_API_KEY in the Variables tab, then redeploy")
             sys.exit(1)
         client = None
-        print(f"Using Claude (claude-sonnet-4-20250514) for summarization")
+        print(f"Using Claude (claude-haiku-4-5-20251001) for summarization")
     elif provider == 'gemini':
         api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
         if not api_key:
@@ -595,19 +595,26 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
 
         url = article.get('url', '')
 
-        # Skip X.com/Twitter links - can't scrape them, use description instead
-        if is_x_twitter_link(url):
-            print(f"  (Skipping X/Twitter link - using description)")
-            article['summary'] = article.get('description', article.get('title', ''))
-            article['full_content_fetched'] = False
-            article['skipped_x_twitter'] = True
-            summarized_articles.append(article)
-            skipped_count += 1
-            continue
-
-        # Fetch full content unless skip_fetch is True
+        # X.com/Twitter links can't be scraped. If the tweet text was already
+        # captured at collection time (collect_x.py stores it in content/description),
+        # summarize/score that text directly instead of fetching. Only fall back to
+        # the old skip behavior when there is no captured text to work with.
         content = ""
-        if not skip_fetch:
+        if is_x_twitter_link(url):
+            captured = article.get('content') or article.get('description') or ''
+            if captured:
+                content = captured
+                print(f"  (X/Twitter - using captured tweet text, no fetch)")
+            else:
+                print(f"  (Skipping X/Twitter link - no captured text, using description)")
+                article['summary'] = article.get('description', article.get('title', ''))
+                article['full_content_fetched'] = False
+                article['skipped_x_twitter'] = True
+                summarized_articles.append(article)
+                skipped_count += 1
+                continue
+        # Fetch full content unless skip_fetch is True (non-X links only)
+        elif not skip_fetch:
             if url:
                 content = fetch_article_content(url)
                 time.sleep(0.5)  # Rate limiting

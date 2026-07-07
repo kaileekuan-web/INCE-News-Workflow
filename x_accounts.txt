@@ -1,0 +1,54 @@
+# X / Twitter sources for AI News collection
+#
+# One entry per line. Blank lines and lines starting with '#' are ignored.
+#
+#   handle        -> pull that account's timeline (write it with or without a leading @)
+#   search: QUERY -> pull a Nitter tweet search for QUERY (used for trending / funding tweets)
+#
+# NOTE: collection goes through Nitter RSS. Account timelines are the reliable
+# path; Nitter search is frequently disabled on public instances, so the
+# `search:` lines are best-effort and may return nothing on a given run.
+# Edit this list freely — it is the single source of truth for who we follow.
+
+# ── AI labs & companies ─────────────────────────────────────────────
+OpenAI
+AnthropicAI
+GoogleDeepMind
+GoogleAI
+MetaAI
+MistralAI
+xai
+StabilityAI
+cohere
+perplexity_ai
+midjourney
+runwayml
+
+# ── Founders & researchers ──────────────────────────────────────────
+sama
+gdb
+karpathy
+ylecun
+AndrewYNg
+demishassabis
+JimFan
+alexandr_wang
+clementdelangue
+drfeifei
+_jasonwei
+
+# ── VCs & investors (market/commentary signal) ──────────────────────
+saranormous
+martin_casado
+bgurley
+garrytan
+packyM
+nathanbenaich
+eladgil
+natfriedman
+balajis
+
+# ── Trending / funding searches (best-effort; Nitter search may be off) ──
+search: AI funding round
+search: AI startup raises Series
+search: AI raised seed
