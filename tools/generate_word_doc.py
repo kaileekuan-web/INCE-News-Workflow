@@ -363,7 +363,7 @@ def _filter_ai_funding_events(claude_key: str, events: list) -> list:
         response = requests.post(
             "https://api.anthropic.com/v1/messages",
             json={
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-haiku-4-5-20251001",
                 "max_tokens": 200,
                 "messages": [{"role": "user", "content": prompt}],
             },
