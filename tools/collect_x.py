@@ -236,7 +236,7 @@ def main():
     parser.add_argument('--output', default='.tmp/raw_x.json', help='Output file path')
     args = parser.parse_args()
 
-    load_dotenv()
+    load_dotenv(override=True)
 
     try:
         validate_date_range(args.start_date, args.end_date)

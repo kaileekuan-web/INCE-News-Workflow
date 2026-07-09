@@ -1133,7 +1133,7 @@ def generate_word_doc(start_date: str, end_date: str,
         max_articles: Maximum articles to include (None = all)
         translate: Add Chinese translation using Claude
     """
-    load_dotenv()
+    load_dotenv(override=True)
 
     print("Loading data...")
 

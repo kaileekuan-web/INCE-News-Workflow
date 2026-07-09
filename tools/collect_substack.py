@@ -106,7 +106,7 @@ def main():
     args = parser.parse_args()
 
     # Get URL from args or .env
-    load_dotenv()
+    load_dotenv(override=True)
     url = args.url or os.getenv('Z_POTENTIALS_URL')
 
     if not url:

@@ -378,7 +378,7 @@ def generate_ai_doc(
     no_funding: bool = False,
     funding_wechat_file: str = None,
 ):
-    load_dotenv()
+    load_dotenv(override=True)
 
     print("Loading data...")
     if not os.path.exists(articles_file):

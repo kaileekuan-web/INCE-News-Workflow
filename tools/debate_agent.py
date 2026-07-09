@@ -19,7 +19,7 @@ import time
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 CLAUDE_MODEL = "claude-sonnet-4-6"
 

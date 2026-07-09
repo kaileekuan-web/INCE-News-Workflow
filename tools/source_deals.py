@@ -17,7 +17,7 @@ import time
 import requests
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 OPENAI_MODEL = "gpt-4o-search-preview"
 

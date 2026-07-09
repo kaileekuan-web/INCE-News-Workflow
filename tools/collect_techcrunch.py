@@ -48,7 +48,7 @@ def collect_techcrunch_newsapi(start_date: str, end_date: str) -> list:
         print("ERROR: newsapi-python not installed. Run: pip install newsapi-python")
         sys.exit(1)
 
-    load_dotenv()
+    load_dotenv(override=True)
     api_key = os.getenv('NEWSAPI_ORG_KEY')
 
     if not api_key:

@@ -135,7 +135,7 @@ def translate_articles(input_file: str = '.tmp/classified_articles.json',
         input_file: Path to classified articles JSON
         output_file: Path to output translated articles JSON
     """
-    load_dotenv()
+    load_dotenv(override=True)
 
     # Check for API key
     api_key = os.getenv('OPENAI_API_KEY')

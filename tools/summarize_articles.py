@@ -496,7 +496,7 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
         consumer: Consumer mode — classify articles into 行业动态/融资新闻 and generate
                   category-appropriate Chinese summaries (Claude only)
     """
-    load_dotenv()
+    load_dotenv(override=True)
 
     # Check for API key based on provider
     if provider == 'claude':

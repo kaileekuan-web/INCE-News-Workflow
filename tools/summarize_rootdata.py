@@ -26,7 +26,7 @@ except ImportError:
 
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)
 
 DESKTOP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

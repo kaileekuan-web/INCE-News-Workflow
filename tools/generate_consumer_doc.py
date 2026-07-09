@@ -136,7 +136,7 @@ def generate_consumer_doc(start_date: str, end_date: str,
         output_dir: Output directory
         max_articles: Cap on total articles (None = all)
     """
-    load_dotenv()
+    load_dotenv(override=True)
 
     print("Loading data...")
 
