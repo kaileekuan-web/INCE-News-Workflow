@@ -250,6 +250,9 @@ def translate_to_chinese_claude(api_key: str, text: str) -> str:
             print(f"  WARNING: Unexpected Claude response format")
             return ""
 
+    except requests.exceptions.HTTPError as e:
+        print(f"  WARNING: Translation failed: {e} — {e.response.text[:500]}")
+        return ""
     except Exception as e:
         print(f"  WARNING: Translation failed: {e}")
         return ""
@@ -546,6 +549,9 @@ def generate_executive_summary(api_key: str, articles: list) -> str:
         )
         response.raise_for_status()
         return response.json()['content'][0]['text'].strip()
+    except requests.exceptions.HTTPError as e:
+        print(f'  WARNING: Executive summary generation failed: {e} — {e.response.text[:500]}')
+        return ''
     except Exception as e:
         print(f'  WARNING: Executive summary generation failed: {e}')
         return ''

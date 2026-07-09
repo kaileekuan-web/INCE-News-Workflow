@@ -421,6 +421,9 @@ def generate_summary_claude(api_key: str, title: str, description: str, content:
 
         return {'summary': text}
 
+    except requests.exceptions.HTTPError as e:
+        print(f"  WARNING: Summarization failed: {e} — {e.response.text[:500]}")
+        return {'summary': fallback_summary}
     except Exception as e:
         print(f"  WARNING: Summarization failed: {e}")
         return {'summary': fallback_summary}
