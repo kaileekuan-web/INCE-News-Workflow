@@ -19,17 +19,11 @@ import sys
 import json
 import argparse
 import re
-import time
 from typing import Dict, List, Any
-
-try:
-    import requests
-except ImportError:
-    requests = None
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import clean_text, deduplicate_articles
+from tools.utils import clean_text, deduplicate_articles, call_ollama
 
 # Funding keywords
 FUNDING_KEYWORDS = [
@@ -275,11 +269,12 @@ def classify_articles(input_dir: str = '.tmp') -> tuple:
     return classified_articles, funding_events
 
 
-# Prompt for Claude Haiku to extract structured funding data from a single article.
-# Claude handles the wide variety of sentence structures and non-standard phrasing
-# that the regex patterns in extract_funding_details() regularly miss (e.g.,
-# "closed a $40M round", "secured Series B funding led by…", Chinese-language reports).
-CLAUDE_FUNDING_EXTRACTION_PROMPT = """从以下文章中提取融资事件信息。
+# Prompt for the local Ollama model to extract structured funding data from a
+# single article. An LLM handles the wide variety of sentence structures and
+# non-standard phrasing that the regex patterns in extract_funding_details()
+# regularly miss (e.g., "closed a $40M round", "secured Series B funding led
+# by…", Chinese-language reports).
+FUNDING_EXTRACTION_PROMPT = """从以下文章中提取融资事件信息。
 
 如果文章包含明确的融资轮次（融资、收购、IPO等），返回如下JSON对象：
 {{"company": "公司名称", "stage": "轮次（Seed/Pre-A/A/B/C/IPO/收购等，未知填null）", "raise": "融资金额（如$50M，未知填null）", "valuation": "估值（未知填null）", "investors": "主要投资方（未知填null）", "summary": "一句话描述公司核心业务"}}
@@ -292,30 +287,24 @@ CLAUDE_FUNDING_EXTRACTION_PROMPT = """从以下文章中提取融资事件信息
 文章内容：{text}"""
 
 
-def extract_funding_with_claude(api_key: str, articles: List[Dict]) -> List[Dict]:
+def extract_funding_with_ollama(articles: List[Dict]) -> List[Dict]:
     """
-    Extract structured funding events from articles using Claude Haiku.
+    Extract structured funding events from articles using the local Ollama model.
 
-    Uses Claude instead of the regex-based extract_funding_details() because regex
+    Uses an LLM instead of the regex-based extract_funding_details() because regex
     patterns miss too many real funding events — phrasing varies wildly across sources
-    (TechCrunch vs TLDR vs translated Chinese content). Claude handles all of them.
+    (TechCrunch vs TLDR vs translated Chinese content). The model handles all of them.
 
-    Haiku is used instead of Sonnet because extraction is a simple structured task;
-    it's 5x cheaper and fast enough for batch processing.
+    Runs entirely locally via Ollama — no API key, no per-request cost.
 
     Args:
-        api_key: Anthropic API key
         articles: List of summarized article dicts
 
     Returns:
         List of funding event dicts with keys: date, company, stage, raise, valuation, investors, summary, url
     """
-    if not requests:
-        print("  WARNING: requests not installed, skipping Claude funding extraction")
-        return []
-
-    # Keyword pre-filter before calling Claude — cheap way to skip the ~80% of articles
-    # that clearly aren't about funding, so we only pay for real candidates.
+    # Keyword pre-filter before calling the model — cheap way to skip the ~80% of
+    # articles that clearly aren't about funding, so we only run inference on real candidates.
     candidates = [
         a for a in articles
         if is_funding_article(
@@ -326,7 +315,7 @@ def extract_funding_with_claude(api_key: str, articles: List[Dict]) -> List[Dict
     if not candidates:
         return []
 
-    print(f"  Claude extraction: {len(candidates)} funding candidate article(s)")
+    print(f"  Ollama extraction: {len(candidates)} funding candidate article(s)")
 
     events = []
     for article in candidates:
@@ -335,29 +324,13 @@ def extract_funding_with_claude(api_key: str, articles: List[Dict]) -> List[Dict
         url = article.get('url', '')
         pub_date = (article.get('published_at', '') or '')[:10]
 
-        prompt = CLAUDE_FUNDING_EXTRACTION_PROMPT.format(title=title, text=text)
+        prompt = FUNDING_EXTRACTION_PROMPT.format(title=title, text=text)
+        raw = call_ollama(prompt, temperature=0.1)
+
+        if not raw or raw.lower() == 'null' or raw == '{}':
+            continue
 
         try:
-            response = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                json={
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 300,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                headers={
-                    'Content-Type': 'application/json',
-                    'x-api-key': api_key,
-                    'anthropic-version': '2023-06-01',
-                },
-                timeout=20,
-            )
-            response.raise_for_status()
-            raw = response.json()['content'][0]['text'].strip()
-
-            if raw.lower() == 'null' or not raw or raw == '{}':
-                continue
-
             json_text = re.sub(r'^```(?:json)?\s*\n?|\n?```$', '', raw).strip()
             event = json.loads(json_text)
 
@@ -376,9 +349,7 @@ def extract_funding_with_claude(api_key: str, articles: List[Dict]) -> List[Dict
         except Exception:
             continue
 
-        time.sleep(0.3)
-
-    print(f"  Claude extraction: found {len(events)} funding event(s)")
+    print(f"  Ollama extraction: found {len(events)} funding event(s)")
     return events
 
 

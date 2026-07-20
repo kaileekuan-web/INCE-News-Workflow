@@ -57,39 +57,41 @@ def _run(cmd: list, label: str):
 
 
 def run_pipeline(start_date: str, end_date: str) -> Path:
-    """Run the full collection → summarise → generate pipeline."""
+    """Run the full collection → summarise → generate pipeline.
+
+    Twitter/X (via Nitter RSS) is the only collection source — no TechCrunch/TLDR.
+    Summarization runs on the local Ollama model — no Claude/Anthropic API calls.
+    """
     py = sys.executable
     tmp = TMP_DIR / "scheduled"
     out = OUTPUT_DIR / "scheduled"
     tmp.mkdir(parents=True, exist_ok=True)
     out.mkdir(parents=True, exist_ok=True)
 
-    tc_out = str(tmp / "raw_techcrunch.json")
+    x_out = str(tmp / "raw_x.json")
+    accounts_file = str(BASE_DIR / "x_accounts.txt")
     _run([
-        py, str(TOOLS_DIR / "collect_techcrunch.py"),
+        py, str(TOOLS_DIR / "collect_x.py"),
         "--start_date", start_date, "--end_date", end_date,
-        "--output", tc_out,
-    ], "Collecting TechCrunch")
-
-    _run([
-        py, str(TOOLS_DIR / "collect_tldr.py"),
-        "--start_date", start_date, "--end_date", end_date,
-        "--output_dir", str(tmp),
-    ], "Collecting TLDR")
+        "--accounts", accounts_file,
+        "--output", x_out,
+    ], "Collecting X/Twitter")
 
     # Merge and deduplicate collected articles
     from tools.utils import deduplicate_articles
     all_articles = []
-    for fname in ("raw_tldr_ai.json", "raw_tldr_main.json", "raw_techcrunch.json"):
-        p = tmp / fname
-        if p.exists():
-            with open(p, encoding="utf-8") as f:
-                all_articles.extend(json.load(f))
+    p = Path(x_out)
+    if p.exists():
+        with open(p, encoding="utf-8") as f:
+            all_articles.extend(json.load(f))
 
     unique = deduplicate_articles(all_articles)
-    print(f"\nDeduped: {len(unique)} unique articles from {len(all_articles)} total")
+    print(f"\nDeduped: {len(unique)} unique posts from {len(all_articles)} total")
     if not unique:
-        raise RuntimeError("No articles collected — check API keys and date range")
+        raise RuntimeError(
+            "No posts collected — Nitter instances may be down/rate-limited. "
+            "Check x_accounts.txt and NITTER_INSTANCES, or re-run later."
+        )
 
     classified = str(tmp / "classified_articles.json")
     with open(classified, "w", encoding="utf-8") as f:
@@ -99,8 +101,8 @@ def run_pipeline(start_date: str, end_date: str) -> Path:
     _run([
         py, str(TOOLS_DIR / "summarize_articles.py"),
         "--input", classified, "--output", summarized,
-        "--provider", "claude", "--yes", "--language", "zh",
-    ], "Summarising with Claude")
+        "--provider", "ollama", "--yes", "--language", "zh",
+    ], "Summarising with local Ollama")
 
     _run([
         py, str(TOOLS_DIR / "generate_ai_doc.py"),

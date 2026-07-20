@@ -23,11 +23,10 @@ from io import BytesIO
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import format_date_for_display
+from tools.utils import format_date_for_display, call_ollama, translate_to_chinese_ollama
 from tools.generate_word_doc import (
     add_hyperlink,
     add_formatted_text,
-    translate_to_chinese_claude,
     extract_funding_with_openai,
     create_funding_table,
     convert_bullets_to_paragraph,
@@ -72,44 +71,30 @@ def is_fundraising_article(_article: dict) -> bool:
     return False
 
 
-def article_to_funding_event(article: dict, claude_key: str = None) -> dict:
-    """Use Claude to extract structured funding info from a detected funding article."""
+def article_to_funding_event(article: dict) -> dict:
+    """Use the local Ollama model to extract structured funding info from a detected funding article."""
     title = article.get("title", "")
     # Prefer full article content over the condensed summary so founder details aren't lost
     body = article.get("content") or article.get("summary") or article.get("description", "")
     date = article.get("published_at", "")[:10]
 
-    if claude_key:
+    prompt = (
+        f"从以下新闻文章中提取融资信息，所有字段均用中文填写。\n\n"
+        f"标题：{title}\n文章正文：{body}\n\n"
+        f"返回一个JSON对象，包含以下字段：\n"
+        f'"company": 获得融资的公司名称\n'
+        f'"summary": 用中文描述该公司，包含：(1) 一句话说明公司核心业务，(2) 如文章中提到创始人背景信息，请附上（姓名、曾任职的公司和职责）。'
+        f'参考格式："AI-native 网络安全公司，用 AI agent 实时检测攻击并自动响应。创始人 XX 曾负责 Amazon Web Services GuardDuty"\n'
+        f'"stage": 融资轮次（天使轮、Pre-A轮、A轮、B轮、C轮等，收购填"收购"，未知填"不详"）\n'
+        f'"raise": 融资金额（例如："5000万美元"，未知填"不详"）\n'
+        f'"valuation": 融资后估值（例如："5亿美元"，未知填"不详"）\n'
+        f'"investors": 主要投资方（例如："领投：红杉资本"，未知填"不详"）\n\n'
+        f"仅返回有效JSON，不要包含其他文字。"
+    )
+
+    text = call_ollama(prompt, temperature=0.1)
+    if text:
         try:
-            prompt = (
-                f"从以下新闻文章中提取融资信息，所有字段均用中文填写。\n\n"
-                f"标题：{title}\n文章正文：{body}\n\n"
-                f"返回一个JSON对象，包含以下字段：\n"
-                f'"company": 获得融资的公司名称\n'
-                f'"summary": 用中文描述该公司，包含：(1) 一句话说明公司核心业务，(2) 如文章中提到创始人背景信息，请附上（姓名、曾任职的公司和职责）。'
-                f'参考格式："AI-native 网络安全公司，用 AI agent 实时检测攻击并自动响应。创始人 XX 曾负责 Amazon Web Services GuardDuty"\n'
-                f'"stage": 融资轮次（天使轮、Pre-A轮、A轮、B轮、C轮等，收购填"收购"，未知填"不详"）\n'
-                f'"raise": 融资金额（例如："5000万美元"，未知填"不详"）\n'
-                f'"valuation": 融资后估值（例如："5亿美元"，未知填"不详"）\n'
-                f'"investors": 主要投资方（例如："领投：红杉资本"，未知填"不详"）\n\n'
-                f"仅返回有效JSON，不要包含其他文字。"
-            )
-            response = requests.post(
-                "https://api.anthropic.com/v1/messages",
-                headers={
-                    "Content-Type": "application/json",
-                    "x-api-key": claude_key,
-                    "anthropic-version": "2023-06-01",
-                },
-                json={
-                    "model": "claude-haiku-4-5-20251001",
-                    "max_tokens": 300,
-                    "messages": [{"role": "user", "content": prompt}],
-                },
-                timeout=30,
-            )
-            response.raise_for_status()
-            text = response.json()["content"][0]["text"].strip()
             text = re.sub(r"^```json\s*", "", text)
             text = re.sub(r"\s*```$", "", text)
             data = json.loads(text)
@@ -126,7 +111,7 @@ def article_to_funding_event(article: dict, claude_key: str = None) -> dict:
         except Exception as e:
             print(f"    WARNING: extraction failed ({e}), using fallback")
 
-    # Fallback: no API key or extraction failed
+    # Fallback: extraction failed
     raw = body.split(".")[0] if body else title
     return {
         "date": date,
@@ -237,7 +222,6 @@ def create_grouped_news_table(
     articles: list,
     chinese_only: bool = False,
     translate: bool = False,
-    claude_key: str = None,
 ):
     """
     Build the grouped AI News table.
@@ -304,14 +288,13 @@ def create_grouped_news_table(
 
             title = article.get("title", "无标题")
             # Translate title to Chinese when in chinese-only or translate mode
-            if (chinese_only or translate) and claude_key:
+            if chinese_only or translate:
                 for attempt in range(3):
-                    t = translate_to_chinese_claude(claude_key, title)
+                    t = translate_to_chinese_ollama(title)
                     if t:
                         title = t
                         break
                     time.sleep(4 * (attempt + 1))
-                time.sleep(0.3)
             url = article.get("url", "")
             if url:
                 add_hyperlink(summary_para, url, title)
@@ -325,24 +308,14 @@ def create_grouped_news_table(
 
             set_run_font(summary_para.add_run("\n\n"), font_size=10)
 
-            if chinese_only and claude_key:
+            if chinese_only or translate:
                 chinese = None
                 for attempt in range(3):
-                    chinese = translate_to_chinese_claude(claude_key, summary_text)
+                    chinese = translate_to_chinese_ollama(summary_text)
                     if chinese:
                         break
                     time.sleep(4 * (attempt + 1))
                 add_formatted_text(summary_para, chinese or summary_text, font_size=10)
-                time.sleep(0.5)
-            elif translate and claude_key:
-                chinese = None
-                for attempt in range(3):
-                    chinese = translate_to_chinese_claude(claude_key, summary_text)
-                    if chinese:
-                        break
-                    time.sleep(4 * (attempt + 1))
-                add_formatted_text(summary_para, chinese or summary_text, font_size=10)
-                time.sleep(0.5)
             else:
                 add_formatted_text(summary_para, summary_text, font_size=10)
 
@@ -403,16 +376,10 @@ def generate_ai_doc(
         if funding_articles:
             print(f"  Detected {len(funding_articles)} fundraising articles — moving to funding table")
 
-    claude_key = None
-    if translate or chinese_only:
-        claude_key = os.getenv("ANTHROPIC_API_KEY")
-        if not claude_key:
-            print("ERROR: ANTHROPIC_API_KEY not found in .env")
-            sys.exit(1)
-        if translate:
-            print("Translation enabled (Claude)")
-        else:
-            print("Chinese mode enabled (Claude for title translation)")
+    if translate:
+        print("Translation enabled (local Ollama)")
+    elif chinese_only:
+        print("Chinese mode enabled (local Ollama for title translation)")
 
     openai_key = os.getenv("OPENAI_API_KEY")
 
@@ -456,18 +423,15 @@ def generate_ai_doc(
     doc.add_paragraph(f"文章总数：{total_str}")
     doc.add_paragraph("")
 
-    if claude_key:
-        print("Generating executive summary...")
-        exec_summary = generate_executive_summary(claude_key, regular_articles)
-        if exec_summary:
-            add_executive_summary_section(doc, exec_summary)
+    print("Generating executive summary...")
+    exec_summary = generate_executive_summary(regular_articles)
+    if exec_summary:
+        add_executive_summary_section(doc, exec_summary)
 
     print("Creating grouped news table...")
-    create_grouped_news_table(doc, regular_articles, chinese_only, translate, claude_key)
+    create_grouped_news_table(doc, regular_articles, chinese_only, translate)
 
     if not no_funding:
-        anthropic_key = claude_key or os.getenv("ANTHROPIC_API_KEY")
-
         # Load WeChat fundraising articles if provided
         wechat_funding = []
         if funding_wechat_file and os.path.exists(funding_wechat_file):
@@ -476,7 +440,7 @@ def generate_ai_doc(
             print(f"Extracting funding details from {len(wechat_funding_articles)} WeChat fundraising article(s)...")
             for i, a in enumerate(wechat_funding_articles, 1):
                 print(f"  [{i}/{len(wechat_funding_articles)}] {a.get('title', '')[:70]}...")
-                wechat_funding.append(article_to_funding_event(a, anthropic_key))
+                wechat_funding.append(article_to_funding_event(a))
 
         print("Searching for AI funding news with ChatGPT (day by day)...")
         if openai_key:

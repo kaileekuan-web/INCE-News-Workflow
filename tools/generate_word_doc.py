@@ -17,8 +17,8 @@ from dotenv import load_dotenv
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import format_date_for_display
-from tools.detect_funding import extract_funding_with_claude
+from tools.utils import format_date_for_display, call_ollama, translate_to_chinese_ollama
+from tools.detect_funding import extract_funding_with_ollama
 
 try:
     from docx import Document
@@ -208,56 +208,6 @@ def add_formatted_text(paragraph, text: str, font_size: int = 10):
         set_run_font(run, font_size=font_size)
 
 
-def translate_to_chinese_claude(api_key: str, text: str) -> str:
-    """
-    Translate text to Chinese using Claude API
-
-    Args:
-        api_key: Anthropic API key
-        text: Text to translate
-
-    Returns:
-        Chinese translation
-    """
-    try:
-        url = "https://api.anthropic.com/v1/messages"
-
-        headers = {
-            'Content-Type': 'application/json',
-            'x-api-key': api_key,
-            'anthropic-version': '2023-06-01'
-        }
-
-        payload = {
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 2048,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"将以下文本翻译成简体中文。只输出翻译结果，不要其他说明。\n\n{text}"
-                }
-            ]
-        }
-
-        response = requests.post(url, json=payload, headers=headers, timeout=60)
-        response.raise_for_status()
-
-        result = response.json()
-
-        if 'content' in result and len(result['content']) > 0:
-            return result['content'][0]['text'].strip()
-        else:
-            print(f"  WARNING: Unexpected Claude response format")
-            return ""
-
-    except requests.exceptions.HTTPError as e:
-        print(f"  WARNING: Translation failed: {e} — {e.response.text[:500]}")
-        return ""
-    except Exception as e:
-        print(f"  WARNING: Translation failed: {e}")
-        return ""
-
-
 def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
     """
     Search for funding events on a single date using OpenAI web search.
@@ -336,13 +286,12 @@ def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
         return []
 
 
-def _filter_ai_funding_events(claude_key: str, events: list) -> list:
+def _filter_ai_funding_events(events: list) -> list:
     """
-    Use Claude to validate that each funding event is genuinely AI-focused.
-    Batches all companies in one API call to minimise cost.
-    Returns the filtered list.
+    Use the local Ollama model to validate that each funding event is genuinely
+    AI-focused. Batches all companies in one call. Returns the filtered list.
     """
-    if not events or not claude_key:
+    if not events:
         return events
 
     companies = [
@@ -362,33 +311,19 @@ def _filter_ai_funding_events(claude_key: str, events: list) -> list:
         "只返回JSON数组，不含其他文字。"
     )
 
-    try:
-        response = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            json={
-                "model": "claude-haiku-4-5-20251001",
-                "max_tokens": 200,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            headers={
-                'Content-Type': 'application/json',
-                'x-api-key': claude_key,
-                'anthropic-version': '2023-06-01',
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        text = response.json()['content'][0]['text'].strip()
+    text = call_ollama(prompt, temperature=0.1)
+    if text:
         match = re.search(r'\[[\d,\s]*\]', text)
         if match:
-            keep_indices = set(json.loads(match.group()))
-            filtered = [e for i, e in enumerate(events) if i in keep_indices]
-            removed = len(events) - len(filtered)
-            if removed:
-                print(f"  Validation removed {removed} non-AI company/companies")
-            return filtered
-    except Exception as e:
-        print(f"  WARNING: AI validation failed ({e}), keeping all events")
+            try:
+                keep_indices = set(json.loads(match.group()))
+                filtered = [e for i, e in enumerate(events) if i in keep_indices]
+                removed = len(events) - len(filtered)
+                if removed:
+                    print(f"  Validation removed {removed} non-AI company/companies")
+                return filtered
+            except Exception as e:
+                print(f"  WARNING: AI validation failed ({e}), keeping all events")
 
     return events
 
@@ -407,7 +342,7 @@ def _company_key(name: str) -> str:
 def _merge_funding_events(base: list, extra: list) -> list:
     """Merge two funding event lists, deduplicating by company name.
 
-    'base' events take priority — they come from Claude's extraction of our
+    'base' events take priority — they come from Ollama's extraction of our
     collected articles (higher fidelity). 'extra' events from the OpenAI web
     search are only added if the company wasn't already found in base.
     When two entries for the same company exist, the one with more non-unknown
@@ -432,7 +367,7 @@ def _merge_funding_events(base: list, extra: list) -> list:
 
 
 def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
-                               topic: str = 'ai', claude_key: str = None) -> list:
+                               topic: str = 'ai') -> list:
     """
     Use OpenAI with web search to find funding events in a date range.
     Searches day-by-day to avoid the model skipping dates in long ranges.
@@ -494,18 +429,18 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
         print(f"  WARNING: Date filtering failed ({e}), keeping all events")
 
     # For AI topic, validate each event is genuinely AI-focused
-    if topic == 'ai' and claude_key:
+    if topic == 'ai':
         print(f"  Validating AI relevance...")
-        unique = _filter_ai_funding_events(claude_key, unique)
+        unique = _filter_ai_funding_events(unique)
 
     return unique
 
 
-def generate_executive_summary(api_key: str, articles: list) -> str:
+def generate_executive_summary(articles: list) -> str:
     """
     Generate a 2-3 paragraph Chinese executive summary from the week's top articles.
 
-    Uses the highest-relevance articles as context so Claude focuses on what
+    Uses the highest-relevance articles as context so the model focuses on what
     actually matters for investment decisions, not just volume of news.
     Returns empty string on failure so callers can skip the section gracefully.
     """
@@ -531,30 +466,7 @@ def generate_executive_summary(api_key: str, articles: list) -> str:
         "只输出摘要正文，不要标题或其他说明。"
     )
 
-    try:
-        import requests as _requests
-        response = _requests.post(
-            'https://api.anthropic.com/v1/messages',
-            json={
-                'model': 'claude-haiku-4-5-20251001',
-                'max_tokens': 800,
-                'messages': [{'role': 'user', 'content': prompt}],
-            },
-            headers={
-                'Content-Type': 'application/json',
-                'x-api-key': api_key,
-                'anthropic-version': '2023-06-01',
-            },
-            timeout=30,
-        )
-        response.raise_for_status()
-        return response.json()['content'][0]['text'].strip()
-    except requests.exceptions.HTTPError as e:
-        print(f'  WARNING: Executive summary generation failed: {e} — {e.response.text[:500]}')
-        return ''
-    except Exception as e:
-        print(f'  WARNING: Executive summary generation failed: {e}')
-        return ''
+    return call_ollama(prompt, temperature=0.4)
 
 
 def add_executive_summary_section(doc, summary_text: str):
@@ -816,7 +728,6 @@ def create_grouped_deeptech_table(
     articles: list,
     chinese_only: bool = False,
     translate: bool = False,
-    claude_key: str = None,
     heading: str = '深科技新闻摘要',
 ):
     """Build a grouped deeptech news table: 半导体 → 机器人 → 新能源 → 其他."""
@@ -863,7 +774,7 @@ def create_grouped_deeptech_table(
             date_para.paragraph_format.space_before = Pt(4)
             set_run_font(date_para.add_run(format_date_for_display(article.get('published_at', ''))), font_size=9)
 
-            _fill_summary_cell(row_cells[1], article, translate, claude_key, chinese_only)
+            _fill_summary_cell(row_cells[1], article, translate, chinese_only)
 
     return table
 
@@ -918,7 +829,7 @@ def _check_watchlist(article: dict, watchlist: list) -> list:
 
 
 def create_watchlist_section(doc: Document, articles: list,
-                              translate: bool, claude_key: str, chinese_only: bool):
+                              translate: bool, chinese_only: bool):
     """Add a Watchlist Highlights section at the top of the document.
 
     Appears before the main AI News table so investment team members can
@@ -949,12 +860,11 @@ def create_watchlist_section(doc: Document, articles: list,
 
     articles_sorted = sorted(articles, key=lambda x: (-x.get('relevance', 3), x.get('published_at', '')))
     for idx, article in enumerate(articles_sorted):
-        _add_article_row(table, article, translate, claude_key, chinese_only,
+        _add_article_row(table, article, translate, chinese_only,
                          idx, len(articles_sorted), show_priority=True)
 
 
-def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
-                        chinese_only: bool):
+def _fill_summary_cell(cell, article: dict, translate: bool, chinese_only: bool):
     """Fill the summary cell: hyperlinked title + body paragraph(s) with proper spacing."""
     title = article.get('title', '无标题')
     url = article.get('url', '')
@@ -985,10 +895,10 @@ def _fill_summary_cell(cell, article: dict, translate: bool, claude_key: str,
         body.paragraph_format.space_before = Pt(0)
         body.paragraph_format.space_after = Pt(4)
         add_formatted_text(body, summary_text, font_size=10)
-    elif translate and claude_key:
+    elif translate:
         chinese = None
         for attempt in range(3):
-            chinese = translate_to_chinese_claude(claude_key, summary_text)
+            chinese = translate_to_chinese_ollama(summary_text)
             if chinese:
                 break
             time.sleep(3 * (attempt + 1))
@@ -1013,7 +923,7 @@ _PRIORITY_COLORS = {
 }
 
 
-def _add_article_row(table, article: dict, translate: bool, claude_key: str,
+def _add_article_row(table, article: dict, translate: bool,
                      chinese_only: bool, idx: int, total: int,
                      show_priority: bool = False):
     """Write one article as a table row. Shared by flat and grouped layouts."""
@@ -1036,13 +946,13 @@ def _add_article_row(table, article: dict, translate: bool, claude_key: str,
         p_run.bold = True
         set_run_font(p_run, font_size=13)
         p_run.font.color.rgb = _PRIORITY_COLORS.get(relevance, RGBColor(89, 89, 89))
-        _fill_summary_cell(row_cells[2], article, translate, claude_key, chinese_only)
+        _fill_summary_cell(row_cells[2], article, translate, chinese_only)
     else:
-        _fill_summary_cell(row_cells[1], article, translate, claude_key, chinese_only)
+        _fill_summary_cell(row_cells[1], article, translate, chinese_only)
 
 
 def create_news_table(doc: Document, articles: list, max_articles: int = None,
-                      translate: bool = False, claude_key: str = None,
+                      translate: bool = False,
                       chinese_only: bool = False):
     """Create AI News table. Groups by category + shows priority column when articles are categorized."""
     if max_articles:
@@ -1105,13 +1015,13 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None,
             cat_articles.sort(key=lambda x: (-x.get('relevance', 3), x.get('published_at', '')))
             _add_deeptech_header_row(table, cat, AI_NEWS_CATEGORY_COLORS[cat], ncols=3)
             for article in cat_articles:
-                _add_article_row(table, article, translate, claude_key, chinese_only,
+                _add_article_row(table, article, translate, chinese_only,
                                  idx, len(articles), show_priority=True)
                 idx += 1
     else:
         articles.sort(key=lambda x: x.get('published_at', ''))
         for i, article in enumerate(articles):
-            _add_article_row(table, article, translate, claude_key, chinese_only,
+            _add_article_row(table, article, translate, chinese_only,
                              i, len(articles), show_priority=False)
 
     return table
@@ -1137,7 +1047,7 @@ def generate_word_doc(start_date: str, end_date: str,
         articles_file: Path to summarized articles JSON
         output_dir: Output directory
         max_articles: Maximum articles to include (None = all)
-        translate: Add Chinese translation using Claude
+        translate: Add Chinese translation using local Ollama
     """
     load_dotenv(override=True)
 
@@ -1155,7 +1065,7 @@ def generate_word_doc(start_date: str, end_date: str,
     print(f"Loaded {len(articles)} articles")
 
     # Drop articles below the requested relevance threshold before building the doc.
-    # Scores were assigned by Claude during summarization (1=low value, 5=must-read VC signal).
+    # Scores were assigned during summarization (1=low value, 5=must-read VC signal).
     # Default is 1 (keep everything); pass --min-signal 3 to cut noise for a tighter brief.
     # Articles that have no 'relevance' field (e.g. from an older run) default to 3.
     if min_signal > 1:
@@ -1167,15 +1077,8 @@ def generate_word_doc(start_date: str, end_date: str,
     # Returns an empty list if the file doesn't exist, so the watchlist section is skipped.
     watchlist = _load_watchlist(watchlist_file)
 
-    # Load Claude key — needed for translation and funding validation
-    claude_key = os.getenv('ANTHROPIC_API_KEY')
     if translate:
-        if not claude_key:
-            print("ERROR: ANTHROPIC_API_KEY not found in .env file")
-            sys.exit(1)
-        print("Translation enabled (Claude)")
-    elif claude_key:
-        print("Claude key loaded (used for funding validation)")
+        print("Translation enabled (local Ollama)")
 
     # Check for OpenAI key for funding extraction
     openai_key = os.getenv('OPENAI_API_KEY')
@@ -1228,7 +1131,7 @@ def generate_word_doc(start_date: str, end_date: str,
                 watchlist_hits.append(article)
         if watchlist_hits:
             print(f"Watchlist: {len(watchlist_hits)} article(s) matched")
-            create_watchlist_section(doc, watchlist_hits, translate, claude_key, chinese_only)
+            create_watchlist_section(doc, watchlist_hits, translate, chinese_only)
             _add_horizontal_rule(doc)
         else:
             print("Watchlist: no matches found this period")
@@ -1236,32 +1139,32 @@ def generate_word_doc(start_date: str, end_date: str,
     # Create news table (grouped for deeptech, flat for others)
     print("Creating news table...")
     if funding_topic == 'deeptech':
-        create_grouped_deeptech_table(doc, articles, chinese_only, translate, claude_key)
+        create_grouped_deeptech_table(doc, articles, chinese_only, translate)
     else:
-        create_news_table(doc, articles, max_articles, translate, claude_key, chinese_only)
+        create_news_table(doc, articles, max_articles, translate, chinese_only)
 
     # Two-source funding pipeline:
-    #   1. Claude extracts from the articles we already collected — fast, cheap (~$0.02),
+    #   1. Ollama extracts from the articles we already collected — free, local,
     #      and high fidelity because these articles were hand-curated by our sources.
     #   2. OpenAI web search supplements with any funding events that weren't covered
     #      by TechCrunch / TLDR (smaller raises, non-English coverage, etc.).
     # Both lists are merged by _merge_funding_events(), keeping the richer entry per company.
-    # Claude extraction is AI-only for now; deeptech still relies solely on OpenAI web search.
+    # Ollama extraction is AI-only for now; deeptech still relies solely on OpenAI web search.
     topic_label = "Deeptech" if funding_topic == "deeptech" else "AI"
     all_funding_events = []
 
-    if claude_key and funding_topic == 'ai':
-        print("Extracting funding events from collected articles (Claude)...")
-        article_events = extract_funding_with_claude(claude_key, articles)
+    if funding_topic == 'ai':
+        print("Extracting funding events from collected articles (Ollama)...")
+        article_events = extract_funding_with_ollama(articles)
         all_funding_events.extend(article_events)
 
     if openai_key:
         print(f"Supplementing with {topic_label} funding web search (ChatGPT)...")
-        web_events = extract_funding_with_openai(openai_key, start_date, end_date, funding_topic, claude_key)
+        web_events = extract_funding_with_openai(openai_key, start_date, end_date, funding_topic)
         all_funding_events = _merge_funding_events(all_funding_events, web_events)
         print(f"  Total after merge: {len(all_funding_events)} funding events")
     elif not all_funding_events:
-        print("  WARNING: OPENAI_API_KEY not set and no Claude events found, skipping funding section")
+        print("  WARNING: OPENAI_API_KEY not set and no Ollama events found, skipping funding section")
 
     if all_funding_events:
         heading_map = {"AI": "AI 融资动态", "Deeptech": "深科技融资动态"}

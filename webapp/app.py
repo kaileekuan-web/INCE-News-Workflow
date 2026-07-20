@@ -3,7 +3,7 @@
 INCE News Dashboard — Flask web app
 
 4 pages:
-  /ai_news   — TechCrunch + TLDR + WeChat, grouped table (OpenAI/Anthropic/BigTech/Other)
+  /ai_news   — X/Twitter (+ optional WeChat), grouped table (OpenAI/Anthropic/BigTech/Other)
   /deeptech  — WeChat only, flat table + online funding search
   /consumer  — WeChat only, consumer format (行业动态 / 融资新闻)
   /crypto    — RootData fundraising scraper, Excel output
@@ -343,27 +343,21 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
         out.mkdir(parents=True, exist_ok=True)
         py = sys.executable
 
-        # Phase 1: TechCrunch
-        _log(job_id, "=== [1/7] Collecting TechCrunch ===")
-        tc_out = str(tmp / "raw_techcrunch.json")
+        # Phase 1: X/Twitter (the only automated source — no Claude/Anthropic calls anywhere in this pipeline)
+        _log(job_id, "=== [1/6] Collecting X/Twitter ===")
+        x_out = str(tmp / "raw_x.json")
+        accounts_file = str(BASE_DIR / "x_accounts.txt")
         if _run_cmd(job_id, [
-            py, str(TOOLS_DIR / "collect_techcrunch.py"),
+            py, str(TOOLS_DIR / "collect_x.py"),
             "--start_date", start_date, "--end_date", end_date,
-            "--output", tc_out,
+            "--accounts", accounts_file,
+            "--output", x_out,
         ]) == -1: return
 
-        # Phase 2: TLDR
-        _log(job_id, "=== [2/7] Collecting TLDR newsletters ===")
-        if _run_cmd(job_id, [
-            py, str(TOOLS_DIR / "collect_tldr.py"),
-            "--start_date", start_date, "--end_date", end_date,
-            "--output_dir", str(tmp),
-        ]) == -1: return
-
-        # Phase 3: WeChat news articles (optional)
+        # Phase 2: WeChat news articles (optional manual addition, not an automated source)
         wechat_articles = []
         if wechat_urls.strip():
-            _log(job_id, "=== [3/7] Collecting WeChat news articles ===")
+            _log(job_id, "=== [2/6] Collecting WeChat news articles ===")
             urls_file = _save_wechat_urls(job_id, wechat_urls, tmp)
             if urls_file:
                 wc_out = str(tmp / "raw_wechat.json")
@@ -375,14 +369,14 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
                     with open(wc_out, encoding="utf-8") as f:
                         wechat_articles = json.load(f)
         else:
-            _log(job_id, "=== [3/7] No WeChat news URLs — skipping ===")
+            _log(job_id, "=== [2/6] No WeChat news URLs — skipping ===")
 
         if _is_stopped(job_id): return
 
-        # Phase 4: WeChat fundraising articles (optional)
+        # Phase 3: WeChat fundraising articles (optional)
         funding_wechat_summarized = None
         if wechat_funding_urls.strip():
-            _log(job_id, "=== [4/7] Collecting WeChat fundraising articles ===")
+            _log(job_id, "=== [3/6] Collecting WeChat fundraising articles ===")
             funding_urls_file = tmp / "wechat_funding_urls.txt"
             funding_urls = [
                 u.strip() for u in wechat_funding_urls.splitlines()
@@ -402,26 +396,24 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
                 if _run_cmd(job_id, [
                     py, str(TOOLS_DIR / "summarize_articles.py"),
                     "--input", wc_funding_raw, "--output", wc_funding_summarized,
-                    "--provider", "claude", "--yes",
+                    "--provider", "ollama", "--yes",
                     "--language", "zh", "--skip-fetch",
                 ]) == -1: return
                 if os.path.exists(wc_funding_summarized):
                     funding_wechat_summarized = wc_funding_summarized
         else:
-            _log(job_id, "=== [4/7] No WeChat fundraising URLs — skipping ===")
+            _log(job_id, "=== [3/6] No WeChat fundraising URLs — skipping ===")
 
         if _is_stopped(job_id): return
 
-        # Phase 5: Deduplicate
-        _log(job_id, "=== [5/7] Deduplicating ===")
+        # Phase 4: Deduplicate
+        _log(job_id, "=== [4/6] Deduplicating ===")
         sys.path.insert(0, str(BASE_DIR))
         from tools.utils import deduplicate_articles
         all_articles = []
-        for fname in ("raw_tldr_ai.json", "raw_tldr_main.json", "raw_techcrunch.json"):
-            p = tmp / fname
-            if p.exists():
-                with open(p, encoding="utf-8") as f:
-                    all_articles.extend(json.load(f))
+        if os.path.exists(x_out):
+            with open(x_out, encoding="utf-8") as f:
+                all_articles.extend(json.load(f))
         all_articles.extend(wechat_articles)
         unique = deduplicate_articles(all_articles)
         classified = str(tmp / "classified_articles.json")
@@ -429,20 +421,23 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
             json.dump(unique, f, ensure_ascii=False, indent=2)
         _log(job_id, f"Deduped: {len(unique)} unique articles")
         if not unique:
-            raise RuntimeError("No articles collected — check API keys and date range")
+            raise RuntimeError(
+                "No articles collected — Nitter instances may be down/rate-limited, "
+                "check x_accounts.txt / NITTER_INSTANCES, or re-run later"
+            )
 
-        # Phase 6: Summarise
-        _log(job_id, "=== [6/7] Summarising with Claude ===")
+        # Phase 5: Summarise
+        _log(job_id, "=== [5/6] Summarising with local Ollama ===")
         summarized = str(tmp / "summarized_articles.json")
         lang_args = ["--language", "zh"] if language == "zh" else []
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
             "--input", classified, "--output", summarized,
-            "--provider", "claude", "--yes",
+            "--provider", "ollama", "--yes",
         ] + lang_args) == -1: return
 
-        # Phase 7: Generate grouped Word doc
-        _log(job_id, "=== [7/7] Generating Word document ===")
+        # Phase 6: Generate grouped Word doc
+        _log(job_id, "=== [6/6] Generating Word document ===")
         mode_args = (
             ["--chinese-only"] if language == "zh"
             else ["--translate"] if language == "both"
@@ -497,12 +492,12 @@ def _pipeline_deeptech(job_id, start_date, end_date, wechat_urls):
         ]) == -1: return
 
         # Phase 2: Summarise in Chinese
-        _log(job_id, "=== [2/4] Summarising with Claude ===")
+        _log(job_id, "=== [2/4] Summarising with local Ollama ===")
         summarized = str(tmp / "summarized_wechat.json")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
             "--input", wc_out, "--output", summarized,
-            "--provider", "claude", "--yes",
+            "--provider", "ollama", "--yes",
             "--language", "zh", "--skip-fetch",
         ]) == -1: return
 
@@ -578,12 +573,12 @@ def _pipeline_consumer(job_id, start_date, end_date, wechat_urls):
         if _is_stopped(job_id): return
 
         # Phase 3: Summarise (consumer mode)
-        _log(job_id, "=== [3/4] Summarising with Claude (consumer mode) ===")
+        _log(job_id, "=== [3/4] Summarising with local Ollama (consumer mode) ===")
         summarized = str(tmp / "summarized_wechat.json")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
             "--input", classified, "--output", summarized,
-            "--provider", "claude", "--yes",
+            "--provider", "ollama", "--yes",
             "--language", "zh", "--consumer",
         ]) == -1: return
 
@@ -737,12 +732,13 @@ print(f'Deduped: {{len(unique)}} articles')
 """
         if _run_cmd(job_id, [py, "-c", dedup_script]) == -1: return
 
-        # Phase 4: Summarize
-        _log(job_id, "=== [4/7] Summarizing articles with Claude ===")
+        # Phase 4: Summarize (local Ollama — just pre-processing input for the
+        # Claude-based insight/debate steps below, which are unchanged)
+        _log(job_id, "=== [4/7] Summarizing articles with local Ollama ===")
         summarized = tmp / "summarized_articles.json"
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
-            "--provider", "claude",
+            "--provider", "ollama",
             "--input", str(classified),
             "--output", str(summarized),
             "--yes",

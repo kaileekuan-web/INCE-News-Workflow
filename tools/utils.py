@@ -9,9 +9,80 @@ Functions:
 - Normalization
 """
 
+import os
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import Tuple, List, Dict, Any
+
+try:
+    import requests
+except ImportError:
+    requests = None
+
+# Local Ollama server — no API key, no per-request cost. Override the host if
+# Ollama runs elsewhere (e.g. a LAN box), or the model if qwen2.5:32b-instruct-q4_K_M
+# isn't pulled locally (`ollama pull qwen2.5:32b-instruct-q4_K_M`).
+OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'http://localhost:11434').rstrip('/')
+OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen2.5:32b-instruct-q4_K_M')
+
+
+def call_ollama(prompt: str, model: str = None, temperature: float = 0.3,
+                timeout: int = 180, num_ctx: int = 16384, num_predict: int = None,
+                system: str = None) -> str:
+    """
+    Call a local Ollama model with a single user-turn prompt.
+
+    num_ctx is passed explicitly (default 16384) because Ollama's own default
+    (2048) silently truncates long articles/prompts — that truncation looked
+    like a "quality" problem but was actually the model never seeing the back
+    half of the source text. 16384 tokens covers the ~8000-char article cap
+    used by fetch_article_content() with room to spare even for CJK text,
+    which tokenizes at roughly 1.3-1.5 tokens/char rather than ~0.25 for English.
+
+    Returns the model's text response, or '' on any failure (connection
+    refused, timeout, model not pulled, etc.) so callers can fall back
+    gracefully exactly like the old Claude/OpenAI call sites did.
+    """
+    if not requests:
+        print("  WARNING: requests not installed, skipping Ollama call")
+        return ''
+
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+
+    options = {"temperature": temperature, "num_ctx": num_ctx}
+    if num_predict:
+        options["num_predict"] = num_predict
+
+    try:
+        response = requests.post(
+            f"{OLLAMA_HOST}/api/chat",
+            json={
+                "model": model or OLLAMA_MODEL,
+                "messages": messages,
+                "stream": False,
+                "options": options,
+            },
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()['message']['content'].strip()
+    except requests.exceptions.ConnectionError:
+        print(f"  WARNING: Could not reach Ollama at {OLLAMA_HOST} — is `ollama serve` running?")
+        return ''
+    except Exception as e:
+        print(f"  WARNING: Ollama call failed: {e}")
+        return ''
+
+
+def translate_to_chinese_ollama(text: str) -> str:
+    """Translate text to Simplified Chinese using the local Ollama model."""
+    if not text:
+        return ''
+    prompt = f"将以下文本翻译成简体中文。只输出翻译结果，不要其他说明。\n\n{text}"
+    return call_ollama(prompt, temperature=0.2)
 
 
 def validate_date_range(start_date: str, end_date: str) -> Tuple[datetime, datetime]:
