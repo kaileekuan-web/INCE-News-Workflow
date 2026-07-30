@@ -1,53 +1,13 @@
-# Environment and secrets
+# Everything in this project is tracked deliberately -- caches, generated
+# outputs, run logs, data dumps and all. The only exclusions are the two
+# things that cannot or must not go into git:
+
+# Virtualenv: macOS-arm64 binaries, rebuildable with `pip install -r
+# requirements.txt`, and contains individual files over GitHub's 100MB
+# hard limit. Rebuild it on the new machine rather than carrying it.
+.venv/
+.venv.broken-stale-path.bak/
+
+# Live API keys. Regenerate these from the provider console on the new
+# machine; never in git history, where they are permanent.
 .env
-credentials.json
-token.json
-
-# Temporary files
-.tmp/
-*.tmp
-
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-ENV/
-build/
-develop-eggs/
-dist/
-downloads/
-eggs/
-.eggs/
-lib/
-lib64/
-parts/
-sdist/
-var/
-wheels/
-*.egg-info/
-.installed.cfg
-*.egg
-
-# IDEs
-.vscode/
-.idea/
-*.code-workspace
-*.swp
-*.swo
-*~
-.DS_Store
-
-# Generated output
-output/
-
-# Logs
-*.log
-
-# Testing
-.pytest_cache/
-.coverage
-htmlcov/

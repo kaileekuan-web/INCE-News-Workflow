@@ -1,0 +1,495 @@
+[
+  {
+    "source": "X/Twitter",
+    "title": "@gdb: Feels like a watershed moment for advancing mathematics. Scientific and medical advances which can really improve people’s lives fe...",
+    "description": "Feels like a watershed moment for advancing mathematics. Scientific and medical advances which can really improve people’s lives feeling very close now.",
+    "url": "https://x.com/gdb/status/2078977720793661459",
+    "published_at": "2026-07-19T22:58:08Z",
+    "content": "Feels like a watershed moment for advancing mathematics. Scientific and medical advances which can really improve people’s lives feeling very close now.",
+    "author": "@gdb",
+    "raw": {
+      "nitter_link": "https://nitter.net/gdb/status/2078977720793661459#m"
+    },
+    "summary": "数学领域正迎来一个转折点，科学和医学的进步有望显著改善人们的生活。这一进展预示着AI在解决复杂问题上的潜力增强，可能推动相关技术的快速发展，并为投资者带来新的机会。",
+    "category": "模型与研究",
+    "relevance": 3,
+    "vc_signal": "research",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@gdb: one of the best features of ChatGPT Work is that it runs in the cloud, meaning that it works from mobile, with your laptop closed. ...",
+    "description": "one of the best features of ChatGPT Work is that it runs in the cloud, meaning that it works from mobile, with your laptop closed. kinda crazy how long the main way to get the magic of agents has been while leaving your laptop cracked open!",
+    "url": "https://x.com/gdb/status/2078922461660533120",
+    "published_at": "2026-07-19T19:18:34Z",
+    "content": "one of the best features of ChatGPT Work is that it runs in the cloud, meaning that it works from mobile, with your laptop closed. kinda crazy how long the main way to get the magic of agents has been while leaving your laptop cracked open!",
+    "author": "@gdb",
+    "raw": {
+      "nitter_link": "https://nitter.net/gdb/status/2078922461660533120#m"
+    },
+    "summary": "ChatGPT Work 的最佳特性之一是其云运行模式，这意味着用户可以在移动设备上使用该服务，即使笔记本电脑处于关闭状态。这种功能打破了之前必须保持笔记本电脑开启才能使用代理程序的限制，为用户提供更大的灵活性和便利性。这可能会影响市场对云端AI应用的需求，并推动相关技术的发展。",
+    "category": "产品与应用",
+    "relevance": 3,
+    "vc_signal": "product",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@ClementDelangue: There have been rumors that open-source AI could soon be limited and regulated. I believe the opposite is what’s needed...",
+    "description": "There have been rumors that open-source AI could soon be limited and regulated. I believe the opposite is what’s needed: we need more open-source AI, not less, for everyone, from all over the world, at the frontier and everywhere! Open models mean more control and transparency over our technology, cheaper AI that we can adapt to our needs and ability to compete with the big players instead of depending fully on renting intelligence from them. Restricting open models wouldn’t make AI safer. It would simply hide the risks, concentrate power in the hands of a few and make it harder for the next generation of builders, researchers, academia, non-profits, governments to participate in making AI safer and more beneficial for all. If you agree and want to show support, we're organizing a peaceful and joyful meetup or march in San Francisco on Saturday. Please join and spread the word! https://partiful.com/e/kgw2wnOtQ2k1RL9DcGX0",
+    "url": "https://x.com/ClementDelangue/status/2078891672818352425",
+    "published_at": "2026-07-19T17:16:13Z",
+    "content": "There have been rumors that open-source AI could soon be limited and regulated. I believe the opposite is what’s needed: we need more open-source AI, not less, for everyone, from all over the world, at the frontier and everywhere! Open models mean more control and transparency over our technology, cheaper AI that we can adapt to our needs and ability to compete with the big players instead of depending fully on renting intelligence from them. Restricting open models wouldn’t make AI safer. It would simply hide the risks, concentrate power in the hands of a few and make it harder for the next generation of builders, researchers, academia, non-profits, governments to participate in making AI safer and more beneficial for all. If you agree and want to show support, we're organizing a peaceful and joyful meetup or march in San Francisco on Saturday. Please join and spread the word! https://partiful.com/e/kgw2wnOtQ2k1RL9DcGX0",
+    "author": "@ClementDelangue",
+    "raw": {
+      "nitter_link": "https://nitter.net/ClementDelangue/status/2078891672818352425#m"
+    },
+    "summary": "有关开源AI可能受到限制和监管的传言正在流传，但作者认为应该鼓励而不是限制开源AI的发展。开源模型可以增加技术控制和透明度，降低成本并促进公平竞争。限制开源AI不会提高安全性，反而会集中权力，阻碍下一代建设者、研究者和政府参与使AI更安全和有益的工作。作者呼吁支持者参加在旧金山组织的和平集会或游行。",
+    "category": "政策与安全",
+    "relevance": 3,
+    "vc_signal": "regulatory",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@ClementDelangue: partiful.com/e/kgw2wnOtQ2k1R…",
+    "description": "partiful.com/e/kgw2wnOtQ2k1R…",
+    "url": "https://x.com/ClementDelangue/status/2078522230712209758",
+    "published_at": "2026-07-18T16:48:11Z",
+    "content": "partiful.com/e/kgw2wnOtQ2k1R…",
+    "author": "@ClementDelangue",
+    "raw": {
+      "nitter_link": "https://nitter.net/ClementDelangue/status/2078522230712209758#m"
+    },
+    "summary": "该推文仅提供了一个链接，没有具体描述内容或上下文信息。因此难以判断其具体内容和对AI行业投资的参考价值。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@ClementDelangue: Just wait for open weights and inference optimization!",
+    "description": "Just wait for open weights and inference optimization!",
+    "url": "https://x.com/ClementDelangue/status/2078272176499945502",
+    "published_at": "2026-07-18T00:14:33Z",
+    "content": "Just wait for open weights and inference optimization!",
+    "author": "@ClementDelangue",
+    "raw": {
+      "nitter_link": "https://nitter.net/ClementDelangue/status/2078272176499945502#m"
+    },
+    "summary": "Clement Delangue在推特上表示，大家只需等待开放权重和推理优化。这条消息主要表达了对即将发布的开源模型或技术改进的期待，但缺乏具体细节，难以评估其对行业或投资的具体影响。",
+    "category": "其他",
+    "relevance": 2,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@saranormous: Rude Ducking",
+    "description": "Rude Ducking",
+    "url": "https://x.com/saranormous/status/2079102679578706308",
+    "published_at": "2026-07-20T07:14:41Z",
+    "content": "Rude Ducking",
+    "author": "@saranormous",
+    "raw": {
+      "nitter_link": "https://nitter.net/saranormous/status/2079102679578706308#m"
+    },
+    "summary": "推文中仅包含 '@saranormous: Rude Ducking'，没有提供具体信息或内容。此类推文与AI行业动态、产品发布、技术突破等无关，对风险投资决策无参考价值。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@saranormous: R to @saranormous: see: massive capital inflows to AI ecosystem",
+    "description": "R to @saranormous: see: massive capital inflows to AI ecosystem",
+    "url": "https://x.com/saranormous/status/2078736559604715919",
+    "published_at": "2026-07-19T06:59:51Z",
+    "content": "R to @saranormous: see: massive capital inflows to AI ecosystem",
+    "author": "@saranormous",
+    "raw": {
+      "nitter_link": "https://nitter.net/saranormous/status/2078736559604715919#m"
+    },
+    "summary": "AI生态系统迎来大量资本流入。这表明投资者对人工智能领域的持续兴趣和信心增强，可能预示着未来会有更多的创新和技术突破。对于风险投资机构而言，这是一个积极的信号，意味着有更多的资金可以支持初创企业和现有企业的成长和发展。",
+    "category": "行业动态",
+    "relevance": 3,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@saranormous: sometimes people’s ideas are judged to be bad because of the ideas, not because of their employers “hidden protectionism wi...",
+    "description": "sometimes people’s ideas are judged to be bad because of the ideas, not because of their employers “hidden protectionism without benefit to Americans is necessary, because otherwise AI will be so unprofitable it will decelerate” is a silly premise no matter who the author",
+    "url": "https://x.com/saranormous/status/2078736471905972245",
+    "published_at": "2026-07-19T06:59:30Z",
+    "content": "sometimes people’s ideas are judged to be bad because of the ideas, not because of their employers “hidden protectionism without benefit to Americans is necessary, because otherwise AI will be so unprofitable it will decelerate” is a silly premise no matter who the author",
+    "author": "@saranormous",
+    "raw": {
+      "nitter_link": "https://nitter.net/saranormous/status/2078736471905972245#m"
+    },
+    "summary": "这篇文章讨论了人们如何因为观点本身而非背后的雇主来评判想法。它批评了一种观点，即认为隐性的保护主义对美国人没有好处，但却是必要的，否则AI将变得无利可图并减速发展。这种论点被认为是荒谬的，无论作者是谁。该文章主要涉及观念和辩论，并未提供具体的投资信号或行业动态信息。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@martin_casado: 🇪🇸🇪🇸🇪🇸🇪🇸🇪🇸🇪🇸💥💥💥💥💥💥🫶🫶🫶🫶🫶🫶🙌🙌🙌🙌🙌🙌🙌",
+    "description": "🇪🇸🇪🇸🇪🇸🇪🇸🇪🇸🇪🇸💥💥💥💥💥💥🫶🫶🫶🫶🫶🫶🙌🙌🙌🙌🙌🙌🙌",
+    "url": "https://x.com/martin_casado/status/2078978393610088649",
+    "published_at": "2026-07-19T23:00:49Z",
+    "content": "🇪🇸🇪🇸🇪🇸🇪🇸🇪🇸🇪🇸💥💥💥💥💥💥🫶🫶🫶🫶🫶🫶🙌🙌🙌🙌🙌🙌🙌",
+    "author": "@martin_casado",
+    "raw": {
+      "nitter_link": "https://nitter.net/martin_casado/status/2078978393610088649#m"
+    },
+    "summary": "推文中仅包含表情符号，没有具体信息或内容涉及AI领域的任何动态、研究进展、产品发布或政策变化。此类型的内容对风险投资决策无实质性参考价值。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@martin_casado: Do you know what open weights model actually decelerate? The formation and power of oligopolies. You know, those things w...",
+    "description": "Do you know what open weights model actually decelerate? The formation and power of oligopolies. You know, those things which really do stifle innovation.",
+    "url": "https://x.com/martin_casado/status/2078509069732913595",
+    "published_at": "2026-07-18T15:55:53Z",
+    "content": "Do you know what open weights model actually decelerate? The formation and power of oligopolies. You know, those things which really do stifle innovation.",
+    "author": "@martin_casado",
+    "raw": {
+      "nitter_link": "https://nitter.net/martin_casado/status/2078509069732913595#m"
+    },
+    "summary": "开放权重模型能够减缓寡头垄断的形成和力量，从而促进创新。这种观点强调了开源技术在打破少数大公司主导市场格局方面的作用。虽然这一论点对理解AI领域的竞争动态有一定启示作用，但缺乏具体的技术或商业实例支持其影响。",
+    "category": "其他",
+    "relevance": 2,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@martin_casado: \"Open-weight models are inherently decelerationist\" .... this is a grossly incorrect statement with no supporting argumen...",
+    "description": "\"Open-weight models are inherently decelerationist\" .... this is a grossly incorrect statement with no supporting arguments or logic that is counter to the long arc of learnings of the industry over the last 50 years. What a stupid thing to say.",
+    "url": "https://x.com/martin_casado/status/2078507190185504793",
+    "published_at": "2026-07-18T15:48:25Z",
+    "content": "\"Open-weight models are inherently decelerationist\" .... this is a grossly incorrect statement with no supporting arguments or logic that is counter to the long arc of learnings of the industry over the last 50 years. What a stupid thing to say.",
+    "author": "@martin_casado",
+    "raw": {
+      "nitter_link": "https://nitter.net/martin_casado/status/2078507190185504793#m"
+    },
+    "summary": "Martin Casado批评了关于开放权重模型本质上是减速主义的陈述，认为该观点缺乏论据和逻辑支持，并且与过去50年的行业学习相悖。此言论强调了在AI模型讨论中需要基于充分证据和合理分析的重要性。",
+    "category": "模型与研究",
+    "relevance": 2,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@garrytan: Markdown files are universal and will survive millennia Unsurprisingly they are a fantastic data format when the intelligence ...",
+    "description": "Markdown files are universal and will survive millennia Unsurprisingly they are a fantastic data format when the intelligence stack is in flux at this extreme pace",
+    "url": "https://x.com/garrytan/status/2078803803659452624",
+    "published_at": "2026-07-19T11:27:03Z",
+    "content": "Markdown files are universal and will survive millennia Unsurprisingly they are a fantastic data format when the intelligence stack is in flux at this extreme pace",
+    "author": "@garrytan",
+    "raw": {
+      "nitter_link": "https://nitter.net/garrytan/status/2078803803659452624#m"
+    },
+    "summary": "推文中提到Markdown文件因其通用性可以在智能技术快速变化的背景下作为一种优秀的数据格式。然而，该观点缺乏具体的应用场景或技术创新细节，对AI行业的投资决策参考价值较低。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@garrytan: GSkills anyone?",
+    "description": "GSkills anyone?",
+    "url": "https://x.com/garrytan/status/2078803084785111120",
+    "published_at": "2026-07-19T11:24:12Z",
+    "content": "GSkills anyone?",
+    "author": "@garrytan",
+    "raw": {
+      "nitter_link": "https://nitter.net/garrytan/status/2078803084785111120#m"
+    },
+    "summary": "推文中提到的“GSkills anyone?”没有提供具体信息或背景，无法判断其具体内容和价值。这可能是一个关于技能讨论或者产品提及，但缺乏足够的细节来评估其对AI行业的投资意义。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@garrytan: Socialists want state controlled bread lines You know what creates abundance? Great functioning markets.",
+    "description": "Socialists want state controlled bread lines You know what creates abundance? Great functioning markets.",
+    "url": "https://x.com/garrytan/status/2078700313461301470",
+    "published_at": "2026-07-19T04:35:49Z",
+    "content": "Socialists want state controlled bread lines You know what creates abundance? Great functioning markets.",
+    "author": "@garrytan",
+    "raw": {
+      "nitter_link": "https://nitter.net/garrytan/status/2078700313461301470#m"
+    },
+    "summary": "该内容重复表达了对社会主义和市场机制的观点，强调市场经济创造繁荣。与AI行业及其投资决策无直接关联，缺乏具体信息或数据支持其论点，因此对于风险投资机构来说价值较低。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@garrytan: Actually fund recovery and treatment Heavily audit and defund any harm reduction organization that actively encourages, aids, ...",
+    "description": "Actually fund recovery and treatment Heavily audit and defund any harm reduction organization that actively encourages, aids, and causes overdose deaths and supports drug dealers It’s very easy, SF just needs the will to do it",
+    "url": "https://x.com/garrytan/status/2078699319209984033",
+    "published_at": "2026-07-19T04:31:52Z",
+    "content": "Actually fund recovery and treatment Heavily audit and defund any harm reduction organization that actively encourages, aids, and causes overdose deaths and supports drug dealers It’s very easy, SF just needs the will to do it",
+    "author": "@garrytan",
+    "raw": {
+      "nitter_link": "https://nitter.net/garrytan/status/2078699319209984033#m"
+    },
+    "summary": "该推文呼吁加强对减少毒品危害组织的审计并停止资助那些鼓励、帮助过量用药死亡和支持毒贩的机构。虽然提到了政策执行的重要性，但内容主要集中在社会问题上，并未涉及AI领域的具体动态或投资机会，对风险投资决策参考价值较低。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@garrytan: The Standard probably should try to stick with more journalism and less partisanship Disappointing how journalism is sometimes...",
+    "description": "The Standard probably should try to stick with more journalism and less partisanship Disappointing how journalism is sometimes weaponized like this It’s not unreasonable to ask for accountability from our cities and attacking accountability is speaking power to truth",
+    "url": "https://x.com/garrytan/status/2078640121369485611",
+    "published_at": "2026-07-19T00:36:38Z",
+    "content": "The Standard probably should try to stick with more journalism and less partisanship Disappointing how journalism is sometimes weaponized like this It’s not unreasonable to ask for accountability from our cities and attacking accountability is speaking power to truth",
+    "author": "@garrytan",
+    "raw": {
+      "nitter_link": "https://nitter.net/garrytan/status/2078640121369485611#m"
+    },
+    "summary": "该推文讨论了新闻报道中的党派倾向问题，批评某些媒体将新闻武器化。作者认为要求城市问责是合理的，并指出攻击这种问责是在为权力发声。此内容与AI行业投资决策关联性较低，主要涉及新闻伦理和公共事务。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@garrytan: California needs to embrace hard tech instead of whatever BS is happening right now",
+    "description": "California needs to embrace hard tech instead of whatever BS is happening right now",
+    "url": "https://x.com/garrytan/status/2078503220024840237",
+    "published_at": "2026-07-18T15:32:39Z",
+    "content": "California needs to embrace hard tech instead of whatever BS is happening right now",
+    "author": "@garrytan",
+    "raw": {
+      "nitter_link": "https://nitter.net/garrytan/status/2078503220024840237#m"
+    },
+    "summary": "Garry Tan呼吁加州应重视硬科技而非当前的一些投机行为。此观点强调了对基础技术投资的重要性，但缺乏具体事件或数据支持，更多是个人意见表达。对于AI领域的风险投资者而言，该言论提供了一种视角，但直接的投资决策参考价值较低。}",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@packyM: 5.6 Sol is the first model that feels like it moves at the speed of my ideas, especially with remote in the app, I can just tell...",
+    "description": "5.6 Sol is the first model that feels like it moves at the speed of my ideas, especially with remote in the app, I can just tell it to do stuff and it does it shockingly well, whatever it takes to do it. Fun stuff coming. Slop, to be sure, but fun slop.",
+    "url": "https://x.com/packyM/status/2078876973888151818",
+    "published_at": "2026-07-19T16:17:48Z",
+    "content": "5.6 Sol is the first model that feels like it moves at the speed of my ideas, especially with remote in the app, I can just tell it to do stuff and it does it shockingly well, whatever it takes to do it. Fun stuff coming. Slop, to be sure, but fun slop.",
+    "author": "@packyM",
+    "raw": {
+      "nitter_link": "https://nitter.net/packyM/status/2078876973888151818#m"
+    },
+    "summary": "5.6 Sol是首个让人感觉其响应速度能跟上用户想法的模型，特别是在应用程序中使用远程功能时。用户可以指示它执行任务，并且它会出乎意料地完成得很好。尽管存在一些不成熟的地方，但这一进展为未来带来了有趣的可能性。这表明产品在用户体验和功能性方面取得了进步，可能会影响市场对AI工具的需求和接受度。",
+    "category": "产品与应用",
+    "relevance": 3,
+    "vc_signal": "product",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@packyM: R to @packyM: Image",
+    "description": "R to @packyM: Image",
+    "url": "https://x.com/packyM/status/2078900281622823253",
+    "published_at": "2026-07-19T17:50:25Z",
+    "content": "R to @packyM: Image",
+    "author": "@packyM",
+    "raw": {
+      "nitter_link": "https://nitter.net/packyM/status/2078900281622823253#m"
+    },
+    "summary": "该条推文仅包含用户之间的图片分享，未提供具体信息或内容。缺乏与AI行业相关的实质性讨论或更新，对投资决策参考价值较低。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@packyM: Dudes rock.",
+    "description": "Dudes rock.",
+    "url": "https://x.com/packyM/status/2078522902639517855",
+    "published_at": "2026-07-18T16:50:51Z",
+    "content": "Dudes rock.",
+    "author": "@packyM",
+    "raw": {
+      "nitter_link": "https://nitter.net/packyM/status/2078522902639517855#m"
+    },
+    "summary": "该推文内容为简单的个人表达，没有提供任何实质性的信息或价值。它既不涉及技术突破、市场趋势，也不包含战略决策或政策变化等内容，对AI行业的投资决策无参考意义。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: the world cup is a great reminder that tennis is such a vastly better sport than football in every way imaginable",
+    "description": "the world cup is a great reminder that tennis is such a vastly better sport than football in every way imaginable",
+    "url": "https://x.com/nathanbenaich/status/2078958741223841980",
+    "published_at": "2026-07-19T21:42:43Z",
+    "content": "the world cup is a great reminder that tennis is such a vastly better sport than football in every way imaginable",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078958741223841980#m"
+    },
+    "summary": "该推文表达了对网球相对于足球的偏好，认为网球在各个方面都优于足球。这是一条个人意见表达，并不涉及AI行业动态、技术进展或投资机会，因此与风险投资决策关联性极低。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: who at anthropic gave claude the voice of a northern english lad well perplexing innit",
+    "description": "who at anthropic gave claude the voice of a northern english lad well perplexing innit",
+    "url": "https://x.com/nathanbenaich/status/2078954543866421512",
+    "published_at": "2026-07-19T21:26:03Z",
+    "content": "who at anthropic gave claude the voice of a northern english lad well perplexing innit",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078954543866421512#m"
+    },
+    "summary": "Anthropic为其AI模型Claude添加了北方英语口音的语音功能，这一细节引发了用户的困惑和讨论。虽然这是一个有趣的产品更新，但它主要是关于用户体验的小幅调整，并不涉及重大技术或市场变动，对投资决策的影响有限。",
+    "category": "产品与应用",
+    "relevance": 2,
+    "vc_signal": "product",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: markets say “gpu demand is hitting a wall” companies say “hold my beer”",
+    "description": "markets say “gpu demand is hitting a wall” companies say “hold my beer”",
+    "url": "https://x.com/nathanbenaich/status/2078893186554937564",
+    "published_at": "2026-07-19T17:22:14Z",
+    "content": "markets say “gpu demand is hitting a wall” companies say “hold my beer”",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078893186554937564#m"
+    },
+    "summary": "市场认为GPU需求正在达到顶峰，但公司对此持乐观态度。这种观点差异反映了AI硬件市场的不确定性。对于投资者而言，这可能意味着需要重新评估对GPU相关公司的投资预期和风险。",
+    "category": "行业动态",
+    "relevance": 3,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: frontier ai models at @profluentbio are trained on billions of curated protein sequences and are validated designs with a...",
+    "description": "frontier ai models at @profluentbio are trained on billions of curated protein sequences and are validated designs with an in-house wet lab for superior representation learning",
+    "url": "https://x.com/nathanbenaich/status/2078890475369398367",
+    "published_at": "2026-07-19T17:11:27Z",
+    "content": "frontier ai models at @profluentbio are trained on billions of curated protein sequences and are validated designs with an in-house wet lab for superior representation learning",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078890475369398367#m"
+    },
+    "summary": "Profluentbio正在使用前沿AI模型，这些模型基于数十亿个精心挑选的蛋白质序列进行训练，并通过内部湿实验室验证设计以实现更优的表现学习。这种技术突破有助于提升生物信息学和药物发现领域的研究能力，对专注于生命科学与人工智能交叉领域的投资者具有重要意义。",
+    "category": "模型与研究",
+    "relevance": 4,
+    "vc_signal": "research",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: Shipping agents at scale with Nikolay Donets of @Revolut at @raais2026: Revolut now runs twice as many GenAI use cases as...",
+    "description": "Shipping agents at scale with Nikolay Donets of @Revolut at @raais2026: Revolut now runs twice as many GenAI use cases as classical ML, across 40+ countries and 200+ products. Nikolay on the war stories: a model in their fallback chain silently died and they were \"completely blind,\" frontier models costing up to 8x more, and their voice assistant now resolves issues 8x faster across 25,000 calls a month.",
+    "url": "https://x.com/nathanbenaich/status/2078863683573440607",
+    "published_at": "2026-07-19T15:25:00Z",
+    "content": "Shipping agents at scale with Nikolay Donets of @Revolut at @raais2026: Revolut now runs twice as many GenAI use cases as classical ML, across 40+ countries and 200+ products. Nikolay on the war stories: a model in their fallback chain silently died and they were \"completely blind,\" frontier models costing up to 8x more, and their voice assistant now resolves issues 8x faster across 25,000 calls a month.",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078863683573440607#m"
+    },
+    "summary": "Revolut现在运行的生成式AI用例数量是传统机器学习的两倍，覆盖了超过40个国家和200种产品。Nikolay Donets分享了一些挑战，如备用链中的模型无声失效导致他们“完全失明”，前沿模型的成本高达8倍之多，但他们的语音助手现在每月处理25,000个电话时解决问题的速度提高了8倍。这些进展表明生成式AI在实际应用中的显著效果和潜在价值，对其他金融科技公司具有重要参考意义。",
+    "category": "产品与应用",
+    "relevance": 4,
+    "vc_signal": "product",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: if you're a social video editing pro, i have a few software grievances with @OpusClip: - can't overlay multiple images in...",
+    "description": "if you're a social video editing pro, i have a few software grievances with @OpusClip: - can't overlay multiple images in one video (say have several logos) - can't schedule multiple videos in one go, have to go one by one - can't edit multiple audio/speakers tracks - can't have more than one text box at the same time list goes on",
+    "url": "https://x.com/nathanbenaich/status/2078536483695411304",
+    "published_at": "2026-07-18T17:44:49Z",
+    "content": "if you're a social video editing pro, i have a few software grievances with @OpusClip: - can't overlay multiple images in one video (say have several logos) - can't schedule multiple videos in one go, have to go one by one - can't edit multiple audio/speakers tracks - can't have more than one text box at the same time list goes on",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078536483695411304#m"
+    },
+    "summary": "社交视频编辑专业人士对OpusClip软件提出了一些不满，包括无法在单个视频中叠加多个图像、不能批量安排多个视频、只能逐个编辑音频/演讲者轨道以及同一时间不能有超过一个文本框。这些问题表明了该产品功能的局限性，可能影响用户体验和专业需求。",
+    "category": "产品与应用",
+    "relevance": 2,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: the new uk gov shouldn’t dismantle its single dept that understands technology",
+    "description": "the new uk gov shouldn’t dismantle its single dept that understands technology",
+    "url": "https://x.com/nathanbenaich/status/2078514414903234598",
+    "published_at": "2026-07-18T16:17:08Z",
+    "content": "the new uk gov shouldn’t dismantle its single dept that understands technology",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078514414903234598#m"
+    },
+    "summary": "英国新政府不应解散唯一一个理解技术的部门。这一呼吁强调了保持政府部门对科技领域深入理解的重要性，以确保相关政策制定的有效性和前瞻性。如果该部门被解散，可能会导致未来政策与快速发展的AI和技术行业脱节，影响行业的健康发展和投资环境。",
+    "category": "政策与安全",
+    "relevance": 3,
+    "vc_signal": "regulatory",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: Image",
+    "description": "Image",
+    "url": "https://x.com/nathanbenaich/status/2078483131665920310",
+    "published_at": "2026-07-18T14:12:49Z",
+    "content": "Image",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078483131665920310#m"
+    },
+    "summary": "推文仅包含一张图片，没有提供具体信息或上下文。因此无法判断其具体内容和对AI行业投资决策的参考价值。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  },
+  {
+    "source": "X/Twitter",
+    "title": "@nathanbenaich: who here is ai-ing in seoul/tokyo these days?",
+    "description": "who here is ai-ing in seoul/tokyo these days?",
+    "url": "https://x.com/nathanbenaich/status/2078276816582627661",
+    "published_at": "2026-07-18T00:33:00Z",
+    "content": "who here is ai-ing in seoul/tokyo these days?",
+    "author": "@nathanbenaich",
+    "raw": {
+      "nitter_link": "https://nitter.net/nathanbenaich/status/2078276816582627661#m"
+    },
+    "summary": "有人在询问谁目前正在首尔或东京从事AI相关工作。这是一条社交性质的提问，没有提供具体的行业动态、技术进展或投资信息，对风险投资决策参考价值较低。",
+    "category": "其他",
+    "relevance": 1,
+    "vc_signal": "other",
+    "full_content_fetched": true
+  }
+]
