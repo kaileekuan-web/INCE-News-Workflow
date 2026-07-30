@@ -813,5 +813,8 @@ if __name__ == "__main__":
     OUTPUT_DIR.mkdir(exist_ok=True)
     TMP_DIR.mkdir(exist_ok=True)
     port = int(os.environ.get("PORT", 5001))
-    print(f"Starting INCE News Dashboard on http://0.0.0.0:{port}")
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    # Loopback only: this dashboard has no login, so a 0.0.0.0 bind handed it
+    # to every device on whatever network the laptop was joined to. Tunnel
+    # (ssh -L) if it genuinely needs to be reached from elsewhere.
+    print(f"Starting INCE News Dashboard on http://127.0.0.1:{port}")
+    app.run(host="127.0.0.1", port=port, debug=False, threaded=True)

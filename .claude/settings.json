@@ -4,7 +4,21 @@
       "Bash(git add *)",
       "Bash(git commit -q -m ' *)",
       "Bash(git push *)",
-      "Bash(git check-ignore *)"
+      "Bash(git check-ignore *)",
+      "Bash(python3 -c ' *)",
+      "Bash(time curl -s http://localhost:11434/api/chat -d '{ *)",
+      "Bash(python3 -m json.tool)",
+      "Bash(python3 -c \"import json,sys; d=json.load\\(sys.stdin\\); print\\(d['message']['content']\\); print\\('total_s', d['total_duration']/1e9\\)\")",
+      "Bash(python3 -m py_compile tools/generate_word_doc.py tools/detect_funding.py tools/summarize_articles.py tools/utils.py)",
+      "Bash(python3 -m py_compile /Users/incehongkong/central-dashboard/projects/news-workflow/tools/generate_ai_doc.py)",
+      "Bash(python3 -m py_compile /Users/incehongkong/central-dashboard/projects/news-workflow/tools/send_report.py)",
+      "Bash(python3 tools/collect_x.py --start_date 2026-07-06 --end_date 2026-07-20 --output .tmp/test_raw_x.json)",
+      "Bash(python3 tools/summarize_articles.py --input .tmp/test_classified.json --output .tmp/test_summarized.json --provider ollama --yes --max 5)",
+      "Bash(python3 tools/generate_word_doc.py --start_date 2026-07-06 --end_date 2026-07-20 --articles .tmp/test_summarized.json --translate --output_dir .tmp/test_output --output-prefix TEST)",
+      "Bash(python3 tools/generate_ai_doc.py --start_date 2026-07-06 --end_date 2026-07-20 --articles .tmp/test_summarized.json --chinese-only --output_dir .tmp/test_output --output-prefix TEST_AI_DOC --no-funding)",
+      "Bash(ollama show *)",
+      "Bash(python3 -m py_compile /Users/incehongkong/central-dashboard/projects/news-workflow/tools/summarize_articles.py)",
+      "Bash(python3 -m py_compile /Users/incehongkong/central-dashboard/projects/news-workflow/webapp/app.py)"
     ]
   }
 }

@@ -19,6 +19,7 @@ from dotenv import load_dotenv
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.utils import format_date_for_display, call_ollama, translate_to_chinese_ollama
 from tools.detect_funding import extract_funding_with_ollama
+from tools.verify_emit import emit_funding_claims
 
 try:
     from docx import Document
@@ -1167,6 +1168,7 @@ def generate_word_doc(start_date: str, end_date: str,
         print("  WARNING: OPENAI_API_KEY not set and no Ollama events found, skipping funding section")
 
     if all_funding_events:
+        emit_funding_claims(all_funding_events)
         heading_map = {"AI": "AI 融资动态", "Deeptech": "深科技融资动态"}
         create_funding_table(doc, all_funding_events, heading=heading_map.get(topic_label, f"{topic_label} 融资动态"))
 
