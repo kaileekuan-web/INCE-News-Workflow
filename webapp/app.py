@@ -39,7 +39,13 @@ TOOLS_DIR = BASE_DIR / "tools"
 OUTPUT_DIR = BASE_DIR / "output"
 TMP_DIR = BASE_DIR / ".tmp"
 
+from ince_auth import install_auth
+
 app = Flask(__name__)
+
+# Shared-secret auth in front of every route. This service bound loopback,
+# which was the only thing protecting it; remote access removes that.
+install_auth(app, realm="News Workflow")
 
 # ── In-memory job store ────────────────────────────────────────────────────────
 # job_id -> {
