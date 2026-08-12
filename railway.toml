@@ -2,7 +2,19 @@
 dockerfilePath = "Dockerfile"
 
 [deploy]
-startCommand = "python webapp/app.py"
-healthcheckPath = "/"
-healthcheckTimeout = 30
+# No startCommand on purpose. Setting one here overrides the Dockerfile's CMD,
+# and the obvious value -- `python webapp/app.py` -- runs Flask's dev server,
+# which app.py deliberately binds to 127.0.0.1 (see the comment on its __main__
+# block: the local dashboard must not be exposed to the whole network). Inside a
+# container a loopback bind is unreachable from Railway's proxy, so the replica
+# never goes healthy and the deploy fails with "service unavailable" even though
+# the image built fine. The Dockerfile's gunicorn CMD binds 0.0.0.0:$PORT, which
+# is what a container needs.
+
+# /healthz, not /. Every other route is behind the shared secret, so a
+# healthcheck against / gets a 401 and the deploy never goes healthy --
+# webapp/ince_auth.py adds /healthz precisely for this and keeps it public.
+healthcheckPath = "/healthz"
+# The image carries Chromium; 30s was tight enough to lose the race on a cold start.
+healthcheckTimeout = 120
 restartPolicyType = "on_failure"
