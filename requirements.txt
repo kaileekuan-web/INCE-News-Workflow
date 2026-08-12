@@ -39,12 +39,15 @@ python-docx>=1.1.0                 # DOCX creation
 pytz>=2023.3                       # Timezone handling
 python-dateutil>=2.8.2             # Date parsing
 
-# Claim envelope contract for the shared verification service. Local editable
-# install -- there is no PyPI package, this is the one shared schema module every
-# instrumented tool imports.
+# NOTE: the claim-envelope package is deliberately NOT listed here.
 #
-# The path here was wrong (../verification-service/envelope) until 2026-08-12, so
-# the install silently no-op'd and tools/verify_emit.py logged a warning and
-# submitted nothing. If funding claims stop reaching the service, check this path
-# resolves before debugging anything else.
--e ../INCE-Verification-Service/envelope
+# It is an editable install from a sibling checkout (-e ../INCE-Verification-Service/envelope),
+# which cannot resolve inside the Docker build context -- pip fails outright and
+# takes the whole image build with it. Keeping it here broke every container
+# build. It lives in requirements-local.txt instead; install that for local work:
+#
+#     pip install -r requirements-local.txt
+#
+# tools/verify_emit.py degrades gracefully when the package is absent (logs a
+# warning, submits nothing), which is the correct behaviour in a container: the
+# verification service is reachable from a developer machine, not from Railway.

@@ -246,7 +246,11 @@ source venv/bin/activate        # Mac/Linux
 # venv\Scripts\activate         # Windows
 
 # 3. Install dependencies
-pip install -r requirements.txt
+#    Use requirements-local.txt on a dev machine: it adds the claim-envelope
+#    package from the sibling INCE-Verification-Service checkout, which is kept
+#    out of requirements.txt because pip cannot resolve a relative editable path
+#    inside the Docker build (it fails the whole image build).
+pip install -r requirements-local.txt   # containers use plain requirements.txt
 
 # 4. Set up environment variables
 cp .env.example .env

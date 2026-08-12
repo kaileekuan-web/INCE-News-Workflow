@@ -1,0 +1,14 @@
+# Local development requirements.
+#
+# Everything the container needs, plus the claim-envelope package that only
+# exists as a sibling checkout. Kept out of requirements.txt because pip cannot
+# resolve a relative editable path inside the Docker build context, and a failed
+# resolve fails the whole image build.
+#
+#     pip install -r requirements-local.txt
+#
+# If this path does not resolve, the verification service checkout is missing or
+# named differently -- tools/verify_emit.py will log a warning and submit nothing
+# rather than break report generation.
+-r requirements.txt
+-e ../INCE-Verification-Service/envelope
