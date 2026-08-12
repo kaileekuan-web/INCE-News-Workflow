@@ -9,80 +9,240 @@ Functions:
 - Normalization
 """
 
+import json
 import os
 from datetime import datetime
 from urllib.parse import urlparse
 from typing import Tuple, List, Dict, Any
 
-try:
-    import requests
-except ImportError:
-    requests = None
+# Every inference in this pipeline goes through the Anthropic API. One key
+# (ANTHROPIC_API_KEY in .env) covers summarization, categorization, funding
+# extraction, translation, insights, and the debate agents.
+#
+# NEWS_CLAUDE_MODEL overrides the model for the whole pipeline — useful when a run is
+# large enough that Sonnet's price is worth the quality trade (a full weekly run
+# is ~150-250 calls). Use the exact IDs: claude-opus-5, claude-sonnet-5,
+# claude-haiku-4-5.
+# The env vars are NEWS_-prefixed on purpose: a bare CLAUDE_EFFORT is already set
+# inside a Claude Code shell, and an unprefixed name would let the pipeline
+# silently inherit it when run from there.
+CLAUDE_MODEL = os.getenv('NEWS_CLAUDE_MODEL', 'claude-opus-5')
 
-# Local Ollama server — no API key, no per-request cost. Override the host if
-# Ollama runs elsewhere (e.g. a LAN box), or the model if qwen2.5:32b-instruct-q4_K_M
-# isn't pulled locally (`ollama pull qwen2.5:32b-instruct-q4_K_M`).
-OLLAMA_HOST = os.getenv('OLLAMA_HOST', 'http://localhost:11434').rstrip('/')
-OLLAMA_MODEL = os.getenv('OLLAMA_MODEL', 'qwen2.5:32b-instruct-q4_K_M')
+# Effort controls how much the model thinks before answering. These are short
+# structured tasks (summarize one article, extract one JSON object), so 'low' is
+# the default: it is the main cost and latency lever, and on Opus 5 it holds up
+# well on exactly this kind of mechanical work. Raise to 'medium'/'high' via
+# NEWS_CLAUDE_EFFORT if summaries start reading thin.
+CLAUDE_EFFORT = os.getenv('NEWS_CLAUDE_EFFORT', 'low')
+
+# Floor for max_tokens. On Opus 5 thinking is ON by default and max_tokens caps
+# thinking AND response text together, so a budget sized for the answer alone
+# truncates the answer mid-sentence. Callers ask for what the answer needs; this
+# floor is the thinking headroom on top.
+CLAUDE_MAX_TOKENS = int(os.getenv('NEWS_CLAUDE_MAX_TOKENS', '4096'))
+
+_claude_client = None
 
 
-def call_ollama(prompt: str, model: str = None, temperature: float = 0.3,
-                timeout: int = 180, num_ctx: int = 16384, num_predict: int = None,
-                system: str = None) -> str:
+def get_claude_client():
     """
-    Call a local Ollama model with a single user-turn prompt.
+    Return a shared Anthropic client, or None if the SDK or key is missing.
 
-    num_ctx is passed explicitly (default 16384) because Ollama's own default
-    (2048) silently truncates long articles/prompts — that truncation looked
-    like a "quality" problem but was actually the model never seeing the back
-    half of the source text. 16384 tokens covers the ~8000-char article cap
-    used by fetch_article_content() with room to spare even for CJK text,
-    which tokenizes at roughly 1.3-1.5 tokens/char rather than ~0.25 for English.
-
-    Returns the model's text response, or '' on any failure (connection
-    refused, timeout, model not pulled, etc.) so callers can fall back
-    gracefully exactly like the old Claude/OpenAI call sites did.
+    Cached at module level so a 200-article run reuses one HTTP connection pool
+    instead of building a client per call.
     """
-    if not requests:
-        print("  WARNING: requests not installed, skipping Ollama call")
-        return ''
-
-    messages = []
-    if system:
-        messages.append({"role": "system", "content": system})
-    messages.append({"role": "user", "content": prompt})
-
-    options = {"temperature": temperature, "num_ctx": num_ctx}
-    if num_predict:
-        options["num_predict"] = num_predict
+    global _claude_client
+    if _claude_client is not None:
+        return _claude_client
 
     try:
-        response = requests.post(
-            f"{OLLAMA_HOST}/api/chat",
-            json={
-                "model": model or OLLAMA_MODEL,
-                "messages": messages,
-                "stream": False,
-                "options": options,
-            },
-            timeout=timeout,
-        )
-        response.raise_for_status()
-        return response.json()['message']['content'].strip()
-    except requests.exceptions.ConnectionError:
-        print(f"  WARNING: Could not reach Ollama at {OLLAMA_HOST} — is `ollama serve` running?")
+        import anthropic
+    except ImportError:
+        print("  WARNING: anthropic package not installed. Run: pip install anthropic")
+        return None
+
+    api_key = os.getenv('ANTHROPIC_API_KEY')
+    if not api_key:
+        print("  WARNING: ANTHROPIC_API_KEY not set in .env")
+        return None
+
+    # max_retries covers 429/5xx with exponential backoff, which is what the old
+    # hand-rolled `time.sleep(20 * attempt)` loops were doing by hand.
+    _claude_client = anthropic.Anthropic(api_key=api_key, max_retries=5, timeout=600.0)
+    return _claude_client
+
+
+def call_claude(prompt: str, model: str = None, max_tokens: int = None,
+                system: str = None, effort: str = None, timeout: int = None) -> str:
+    """
+    Call Claude with a single user-turn prompt and return its text.
+
+    Args:
+        prompt: The user-turn prompt.
+        model: Model ID override (default: CLAUDE_MODEL).
+        max_tokens: Budget for the answer. Raised to at least CLAUDE_MAX_TOKENS
+                    because thinking shares this budget on Opus 5 — see the
+                    CLAUDE_MAX_TOKENS note above.
+        system: Optional system prompt.
+        effort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' (default: CLAUDE_EFFORT).
+        timeout: Per-request timeout in seconds (default: the client's 600s).
+
+    Returns the model's text response, or '' on any failure (missing key, rate
+    limit exhaustion, safety refusal, network error) so every call site can fall
+    back to the raw description exactly as it did before.
+    """
+    client = get_claude_client()
+    if client is None:
         return ''
+
+    budget = max(max_tokens or 0, CLAUDE_MAX_TOKENS)
+    if timeout is not None:
+        client = client.with_options(timeout=float(timeout))
+
+    kwargs = {
+        'model': model or CLAUDE_MODEL,
+        'max_tokens': budget,
+        'output_config': {'effort': effort or CLAUDE_EFFORT},
+        'messages': [{'role': 'user', 'content': prompt}],
+    }
+    if system:
+        kwargs['system'] = system
+
+    try:
+        response = client.messages.create(**kwargs)
     except Exception as e:
-        print(f"  WARNING: Ollama call failed: {e}")
+        print(f"  WARNING: Claude call failed: {e}")
         return ''
 
+    # Safety classifiers can decline a request: HTTP 200, empty/partial content.
+    # Check before reading content, or an indexing error masks the real cause.
+    if response.stop_reason == 'refusal':
+        category = getattr(getattr(response, 'stop_details', None), 'category', None)
+        print(f"  WARNING: Claude declined this request (category: {category})")
+        return ''
 
-def translate_to_chinese_ollama(text: str) -> str:
-    """Translate text to Simplified Chinese using the local Ollama model."""
+    text = ''.join(b.text for b in response.content if b.type == 'text').strip()
+
+    if response.stop_reason == 'max_tokens':
+        print(f"  WARNING: Claude hit max_tokens ({budget}) — output may be truncated")
+
+    return text
+
+
+# Anthropic's server-side web search tool. Versioned by date, so it lives here as
+# one constant rather than being retyped at each call site — when the version
+# moves, this is the only line that changes.
+WEB_SEARCH_TOOL_TYPE = os.getenv('NEWS_WEB_SEARCH_TOOL', 'web_search_20260209')
+
+
+def call_claude_search(prompt: str, schema: dict = None, max_uses: int = 8,
+                       effort: str = 'medium', max_tokens: int = 8192,
+                       model: str = None, max_resumes: int = 3,
+                       label: str = 'search'):
+    """
+    Run a prompt with Claude's server-side web search and return the result.
+
+    Claude issues the queries and reads the results on Anthropic's side, so
+    there is no search API to configure here.
+
+    Args:
+        schema: JSON Schema for the reply. When given, the API is constrained to
+                emit matching JSON and this returns the parsed object — no regex
+                scraping of the response text, which is what used to drift
+                whenever the model changed how it wrapped its output.
+        max_uses: Cap on searches per call, so one bad query can't run away.
+        effort: Search-and-reconcile is judgment work; 'medium' is the floor
+                that behaves well here, above the per-article default.
+        max_resumes: A long search turn can stop with `pause_turn` and ask to be
+                resumed. Resume at most this many times, then give up.
+        label: Name used in warnings, so failures say which search failed.
+
+    Returns the parsed object (with schema), the reply text (without), or None
+    on any failure — every caller treats None as "no results" and carries on.
+    """
+    client = get_claude_client()
+    if client is None:
+        return None
+
+    tools = [{"type": WEB_SEARCH_TOOL_TYPE, "name": "web_search", "max_uses": max_uses}]
+    output_config = {"effort": effort}
+    if schema:
+        output_config["format"] = {"type": "json_schema", "schema": schema}
+
+    messages = [{"role": "user", "content": prompt}]
+
+    try:
+        response = client.messages.create(
+            model=model or CLAUDE_MODEL,
+            max_tokens=max_tokens,
+            output_config=output_config,
+            tools=tools,
+            messages=messages,
+        )
+
+        resumes = 0
+        while response.stop_reason == 'pause_turn' and resumes < max_resumes:
+            resumes += 1
+            response = client.messages.create(
+                model=model or CLAUDE_MODEL,
+                max_tokens=max_tokens,
+                output_config=output_config,
+                tools=tools,
+                messages=[
+                    {"role": "user", "content": prompt},
+                    {"role": "assistant", "content": response.content},
+                ],
+            )
+        if response.stop_reason == 'pause_turn':
+            print(f"  WARNING: {label} still paused after {max_resumes} resumes — partial results")
+    except Exception as e:
+        print(f"  WARNING: {label} failed: {e}")
+        return None
+
+    if response.stop_reason == 'refusal':
+        print(f"  WARNING: Claude declined the {label} request")
+        return None
+
+    text = ''.join(b.text for b in response.content if b.type == 'text').strip()
+    if not text:
+        return None
+
+    if not schema:
+        return text
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        # Constrained decoding makes this near-impossible; if it ever fires it
+        # means the turn was cut short (max_tokens) rather than that the model
+        # freelanced the format.
+        print(f"  WARNING: {label} returned unparseable JSON ({e})")
+        return None
+
+
+def translate_to_chinese_claude(text: str) -> str:
+    """
+    Translate text to Simplified Chinese with Claude.
+
+    The proper-noun rule is load-bearing: an untethered translation pass will
+    transliterate or "correct" company and product names (an early run turned
+    ByteDance into "BiteDance"), which reads as a factual error in the report.
+    Translation must not add, drop, or reinterpret anything either — it is the
+    one step in the pipeline with no new information to contribute.
+    """
     if not text:
         return ''
-    prompt = f"将以下文本翻译成简体中文。只输出翻译结果，不要其他说明。\n\n{text}"
-    return call_ollama(prompt, temperature=0.2)
+    prompt = (
+        "将以下文本翻译成简体中文。\n\n"
+        "要求：\n"
+        "- 公司名、产品名、模型名、人名等专有名词保持原文拼写，不要音译、缩写或改写"
+        "（例如 ByteDance、Claude Opus、Sam Altman 原样保留）。\n"
+        "- 数字、金额、比例、日期与原文完全一致。\n"
+        "- 只翻译，不要增补背景信息、不要解释、不要省略任何内容。\n"
+        "- 只输出翻译结果，不要其他说明。\n\n"
+        f"{text}"
+    )
+    return call_claude(prompt, max_tokens=2048)
 
 
 def validate_date_range(start_date: str, end_date: str) -> Tuple[datetime, datetime]:

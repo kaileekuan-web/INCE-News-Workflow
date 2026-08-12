@@ -23,7 +23,7 @@ from typing import Dict, List, Any
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import clean_text, deduplicate_articles, call_ollama
+from tools.utils import clean_text, deduplicate_articles, call_claude
 
 # Funding keywords
 FUNDING_KEYWORDS = [
@@ -269,7 +269,7 @@ def classify_articles(input_dir: str = '.tmp') -> tuple:
     return classified_articles, funding_events
 
 
-# Prompt for the local Ollama model to extract structured funding data from a
+# Prompt for Claude to extract structured funding data from a
 # single article. An LLM handles the wide variety of sentence structures and
 # non-standard phrasing that the regex patterns in extract_funding_details()
 # regularly miss (e.g., "closed a $40M round", "secured Series B funding led
@@ -281,21 +281,27 @@ FUNDING_EXTRACTION_PROMPT = """从以下文章中提取融资事件信息。
 
 如果文章不包含融资事件，返回：null
 
+【事实约束】
+- 只能使用下方文章中明确出现的信息。不得根据公司名或行业补全你已知的背景、金额、投资方或创始人经历。
+- 文章未写明的字段一律填 null，不要猜测或用相近数字代替。
+- 金额、估值、轮次必须与文章中的表述一致。
+
 只返回JSON对象或null，不要包含其他文字。
 
 文章标题：{title}
 文章内容：{text}"""
 
 
-def extract_funding_with_ollama(articles: List[Dict]) -> List[Dict]:
+def extract_funding_with_claude(articles: List[Dict]) -> List[Dict]:
     """
-    Extract structured funding events from articles using the local Ollama model.
+    Extract structured funding events from articles using Claude.
 
     Uses an LLM instead of the regex-based extract_funding_details() because regex
     patterns miss too many real funding events — phrasing varies wildly across sources
     (TechCrunch vs TLDR vs translated Chinese content). The model handles all of them.
 
-    Runs entirely locally via Ollama — no API key, no per-request cost.
+    Requires ANTHROPIC_API_KEY. Only runs on keyword pre-filtered candidates,
+    so a typical week is a few dozen calls, not one per article.
 
     Args:
         articles: List of summarized article dicts
@@ -315,7 +321,7 @@ def extract_funding_with_ollama(articles: List[Dict]) -> List[Dict]:
     if not candidates:
         return []
 
-    print(f"  Ollama extraction: {len(candidates)} funding candidate article(s)")
+    print(f"  Claude extraction: {len(candidates)} funding candidate article(s)")
 
     events = []
     for article in candidates:
@@ -325,7 +331,7 @@ def extract_funding_with_ollama(articles: List[Dict]) -> List[Dict]:
         pub_date = (article.get('published_at', '') or '')[:10]
 
         prompt = FUNDING_EXTRACTION_PROMPT.format(title=title, text=text)
-        raw = call_ollama(prompt, temperature=0.1)
+        raw = call_claude(prompt, max_tokens=2048)
 
         if not raw or raw.lower() == 'null' or raw == '{}':
             continue
@@ -349,7 +355,7 @@ def extract_funding_with_ollama(articles: List[Dict]) -> List[Dict]:
         except Exception:
             continue
 
-    print(f"  Ollama extraction: found {len(events)} funding event(s)")
+    print(f"  Claude extraction: found {len(events)} funding event(s)")
     return events
 
 

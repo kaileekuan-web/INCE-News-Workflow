@@ -17,8 +17,13 @@ from dotenv import load_dotenv
 
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import format_date_for_display, call_ollama, translate_to_chinese_ollama
-from tools.detect_funding import extract_funding_with_ollama
+from tools.utils import (
+    format_date_for_display,
+    call_claude,
+    call_claude_search,
+    translate_to_chinese_claude,
+)
+from tools.detect_funding import extract_funding_with_claude
 from tools.verify_emit import emit_funding_claims
 
 try:
@@ -209,10 +214,44 @@ def add_formatted_text(paragraph, text: str, font_size: int = 10):
         set_run_font(run, font_size=font_size)
 
 
+# Shape of the funding search reply. Constrained decoding guarantees it, which
+# replaces the old "regex a JSON array out of the prose" step — that step was the
+# part most likely to break silently as model output style drifts.
+FUNDING_EVENTS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "events": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string", "description": "公告日期 YYYY-MM-DD"},
+                    "company": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "stage": {"type": "string"},
+                    "raise": {"type": "string"},
+                    "valuation": {"type": "string"},
+                    "investors": {"type": "string"},
+                    "url": {"type": "string"},
+                },
+                "required": ["date", "company", "summary", "stage", "raise",
+                             "valuation", "investors", "url"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["events"],
+    "additionalProperties": False,
+}
+
+
 def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
     """
-    Search for funding events on a single date using OpenAI web search.
-    Returns list of funding event dicts.
+    Search for funding events on a single date using Claude's server-side web
+    search tool. Returns list of funding event dicts.
+
+    api_key is accepted for call-site compatibility and ignored — the Anthropic
+    client reads ANTHROPIC_API_KEY from the environment.
     """
     if topic == 'deeptech':
         sector_desc = "深科技公司（包括机器人、先进材料、量子计算、生物/医疗科技、航天、半导体、清洁能源等硬科技领域）"
@@ -226,7 +265,7 @@ def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
 
     prompt = f"""搜索网络，找出{date}宣布的{sector_desc}融资轮次、投资和收购事件。
 
-对于每个融资事件，返回一个JSON对象。返回一个包含以下字段的JSON数组：
+对于每个融资事件，返回一个对象，字段如下：
 - "date": 宣布日期，格式为YYYY-MM-DD
 - "company": 获得融资的公司名称
 - "summary": 用中文描述该公司，包含：(1) 一句话说明公司的核心业务，(2) 如网上有创始人相关背景信息，请附上（例如：曾就职的知名公司、负责的项目、相关行业经验等）。参考格式："AI-native 网络安全公司，用 AI agent 实时检测攻击并自动响应。创始人 XX 曾负责 Amazon Web Services GuardDuty，联合创始人 YY 曾在 Abnormal AI 负责机器学习"
@@ -236,61 +275,26 @@ def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
 - "investors": 主要投资方（例如："领投：红杉资本，跟投：Andreessen Horowitz"，未知填"不详"）
 - "url": 最相关的新闻来源链接（如有则填完整URL，否则填""）
 
-只包含实际融资事件（已筹集资金、收购、IPO）。如未找到任何事件，返回空数组[]。
-仅返回有效的JSON数组，不要包含其他文字。"""
+【事实约束】
+- 每一个字段都必须有本次搜索中找到的来源支持。不得凭已有知识补全金额、估值、投资方或创始人背景。
+- 无法从来源确认的字段一律填"不详"，不要猜测，也不要用相近的数字代替。
+- url 必须是真实存在、支持该条目的来源链接；没有链接就不要输出这条事件。
+- 只包含日期确实在 {date} 的事件；把邻近日期的旧新闻算进来会让报告的时间范围失真。
 
-    try:
-        headers = {
-            'Content-Type': 'application/json',
-            'Authorization': f'Bearer {api_key}'
-        }
-        payload = {
-            "model": "gpt-4o-search-preview",
-            "web_search_options": {},
-            "messages": [{"role": "user", "content": prompt}],
-        }
+只包含实际融资事件（已筹集资金、收购、IPO）。如未找到任何事件，返回空数组[]。"""
 
-        for attempt in range(3):
-            response = requests.post(
-                "https://api.openai.com/v1/chat/completions",
-                json=payload, headers=headers, timeout=90
-            )
-            if response.status_code == 429:
-                wait = 20 * (attempt + 1)
-                print(f"  Rate limited, waiting {wait}s...")
-                time.sleep(wait)
-                continue
-            break
-
-        result = response.json()
-        if 'choices' not in result:
-            print(f"  OpenAI response: {result}")
-            return []
-
-        content = result['choices'][0]['message']['content'].strip()
-
-        json_match = re.search(r'```(?:json)?\s*(\[.*?\])\s*```', content, re.DOTALL)
-        if json_match:
-            content = json_match.group(1)
-        else:
-            array_match = re.search(r'(\[.*\])', content, re.DOTALL)
-            if array_match:
-                content = array_match.group(1)
-            else:
-                return []
-
-        events = json.loads(content)
-        return events if isinstance(events, list) else []
-
-    except Exception as e:
-        print(f"  WARNING: Funding search failed for {date}: {e}")
+    result = call_claude_search(prompt, schema=FUNDING_EVENTS_SCHEMA,
+                                label=f"funding search {date}")
+    if not result:
         return []
+    events = result.get('events')
+    return events if isinstance(events, list) else []
 
 
 def _filter_ai_funding_events(events: list) -> list:
     """
-    Use the local Ollama model to validate that each funding event is genuinely
-    AI-focused. Batches all companies in one call. Returns the filtered list.
+    Use Claude to validate that each funding event is genuinely AI-focused.
+    Batches all companies in one call. Returns the filtered list.
     """
     if not events:
         return events
@@ -312,7 +316,7 @@ def _filter_ai_funding_events(events: list) -> list:
         "只返回JSON数组，不含其他文字。"
     )
 
-    text = call_ollama(prompt, temperature=0.1)
+    text = call_claude(prompt, max_tokens=2048)
     if text:
         match = re.search(r'\[[\d,\s]*\]', text)
         if match:
@@ -343,8 +347,8 @@ def _company_key(name: str) -> str:
 def _merge_funding_events(base: list, extra: list) -> list:
     """Merge two funding event lists, deduplicating by company name.
 
-    'base' events take priority — they come from Ollama's extraction of our
-    collected articles (higher fidelity). 'extra' events from the OpenAI web
+    'base' events take priority — they come from Claude's extraction of our
+    collected articles (higher fidelity). 'extra' events from the Claude web
     search are only added if the company wasn't already found in base.
     When two entries for the same company exist, the one with more non-unknown
     fields is kept (fewest '不详'/'N/A' values wins).
@@ -367,14 +371,15 @@ def _merge_funding_events(base: list, extra: list) -> list:
     return list(seen.values())
 
 
-def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
-                               topic: str = 'ai') -> list:
+def extract_funding_with_web_search(api_key: str, start_date: str, end_date: str,
+                                    topic: str = 'ai') -> list:
     """
-    Use OpenAI with web search to find funding events in a date range.
+    Use Claude with server-side web search to find funding events in a date range.
     Searches day-by-day to avoid the model skipping dates in long ranges.
 
     Args:
-        api_key: OpenAI API key
+        api_key: Unused, kept for call-site compatibility (the Anthropic client
+                 reads ANTHROPIC_API_KEY from the environment)
         start_date: YYYY-MM-DD start date
         end_date: YYYY-MM-DD end date
         topic: 'ai' (default) or 'deeptech'
@@ -406,8 +411,8 @@ def extract_funding_with_openai(api_key: str, start_date: str, end_date: str,
     unique = _merge_funding_events(all_events, [])
     print(f"  Total unique funding events: {len(unique)}")
 
-    # Drop events outside the requested date range — the OpenAI web search
-    # often returns historical results regardless of the date specified.
+    # Drop events outside the requested date range — a web search often returns
+    # historical results regardless of the date specified.
     try:
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d")
@@ -463,11 +468,13 @@ def generate_executive_summary(articles: list) -> str:
         "- 第二段：值得关注的融资、并购或公司战略动向\n"
         "- 第三段（可选）：对AI投资格局的整体判断或近期需重点关注的方向\n"
         "- 语言简洁专业，直接切入重点，不要列表\n\n"
+        "【事实约束】只能使用下面列出的新闻条目中的信息。不得加入列表之外的公司、"
+        "数字、融资金额或行业背景，也不要对未来做预测。列表中信息不足时就写短一些。\n\n"
         f"本周新闻（按投资价值排序）：\n{news_lines}\n\n"
         "只输出摘要正文，不要标题或其他说明。"
     )
 
-    return call_ollama(prompt, temperature=0.4)
+    return call_claude(prompt, max_tokens=4096, effort='medium')
 
 
 def add_executive_summary_section(doc, summary_text: str):
@@ -899,7 +906,7 @@ def _fill_summary_cell(cell, article: dict, translate: bool, chinese_only: bool)
     elif translate:
         chinese = None
         for attempt in range(3):
-            chinese = translate_to_chinese_ollama(summary_text)
+            chinese = translate_to_chinese_claude(summary_text)
             if chinese:
                 break
             time.sleep(3 * (attempt + 1))
@@ -1048,7 +1055,7 @@ def generate_word_doc(start_date: str, end_date: str,
         articles_file: Path to summarized articles JSON
         output_dir: Output directory
         max_articles: Maximum articles to include (None = all)
-        translate: Add Chinese translation using local Ollama
+        translate: Add Chinese translation using Claude
     """
     load_dotenv(override=True)
 
@@ -1079,10 +1086,10 @@ def generate_word_doc(start_date: str, end_date: str,
     watchlist = _load_watchlist(watchlist_file)
 
     if translate:
-        print("Translation enabled (local Ollama)")
+        print("Translation enabled (Claude)")
 
-    # Check for OpenAI key for funding extraction
-    openai_key = os.getenv('OPENAI_API_KEY')
+    # Check for the Anthropic key for funding extraction
+    anthropic_key = os.getenv('ANTHROPIC_API_KEY')
 
     # Create document
     print("Creating Word document...")
@@ -1144,28 +1151,28 @@ def generate_word_doc(start_date: str, end_date: str,
     else:
         create_news_table(doc, articles, max_articles, translate, chinese_only)
 
-    # Two-source funding pipeline:
-    #   1. Ollama extracts from the articles we already collected — free, local,
-    #      and high fidelity because these articles were hand-curated by our sources.
-    #   2. OpenAI web search supplements with any funding events that weren't covered
+    # Two-source funding pipeline, both on Claude:
+    #   1. Extraction from the articles we already collected — high fidelity,
+    #      because these articles were hand-curated by our sources.
+    #   2. Web search supplements with any funding events that weren't covered
     #      by TechCrunch / TLDR (smaller raises, non-English coverage, etc.).
     # Both lists are merged by _merge_funding_events(), keeping the richer entry per company.
-    # Ollama extraction is AI-only for now; deeptech still relies solely on OpenAI web search.
+    # Article extraction is AI-only for now; deeptech relies solely on web search.
     topic_label = "Deeptech" if funding_topic == "deeptech" else "AI"
     all_funding_events = []
 
     if funding_topic == 'ai':
-        print("Extracting funding events from collected articles (Ollama)...")
-        article_events = extract_funding_with_ollama(articles)
+        print("Extracting funding events from collected articles (Claude)...")
+        article_events = extract_funding_with_claude(articles)
         all_funding_events.extend(article_events)
 
-    if openai_key:
-        print(f"Supplementing with {topic_label} funding web search (ChatGPT)...")
-        web_events = extract_funding_with_openai(openai_key, start_date, end_date, funding_topic)
+    if anthropic_key:
+        print(f"Supplementing with {topic_label} funding web search (Claude)...")
+        web_events = extract_funding_with_web_search(anthropic_key, start_date, end_date, funding_topic)
         all_funding_events = _merge_funding_events(all_funding_events, web_events)
         print(f"  Total after merge: {len(all_funding_events)} funding events")
     elif not all_funding_events:
-        print("  WARNING: OPENAI_API_KEY not set and no Ollama events found, skipping funding section")
+        print("  WARNING: ANTHROPIC_API_KEY not set and no extracted events found, skipping funding section")
 
     if all_funding_events:
         emit_funding_claims(all_funding_events)
@@ -1191,7 +1198,7 @@ def main():
     parser.add_argument('--articles', default='.tmp/summarized_articles.json', help='Summarized articles file')
     parser.add_argument('--output_dir', default='output', help='Output directory')
     parser.add_argument('--max', type=int, default=None, help='Maximum articles to include (default: all)')
-    parser.add_argument('--translate', action='store_true', help='Add Chinese translation using ChatGPT')
+    parser.add_argument('--translate', action='store_true', help='Add Chinese translation using Claude')
     parser.add_argument('--chinese-only', action='store_true', help='Output Chinese summary only (no English), for pre-summarized Chinese articles')
     parser.add_argument('--output-prefix', default='AI_News', help='Output filename prefix (default: AI_News)')
     parser.add_argument('--funding-topic', choices=['ai', 'deeptech'], default='ai',

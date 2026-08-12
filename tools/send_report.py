@@ -60,7 +60,7 @@ def run_pipeline(start_date: str, end_date: str) -> Path:
     """Run the full collection → summarise → generate pipeline.
 
     Twitter/X (via Nitter RSS) is the only collection source — no TechCrunch/TLDR.
-    Summarization runs on the local Ollama model — no Claude/Anthropic API calls.
+    Summarization runs on Claude (requires ANTHROPIC_API_KEY).
     """
     py = sys.executable
     tmp = TMP_DIR / "scheduled"
@@ -101,8 +101,8 @@ def run_pipeline(start_date: str, end_date: str) -> Path:
     _run([
         py, str(TOOLS_DIR / "summarize_articles.py"),
         "--input", classified, "--output", summarized,
-        "--provider", "ollama", "--yes", "--language", "zh",
-    ], "Summarising with local Ollama")
+        "--provider", "claude", "--yes", "--language", "zh",
+    ], "Summarising with Claude")
 
     _run([
         py, str(TOOLS_DIR / "generate_ai_doc.py"),

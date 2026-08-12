@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Summarize RootData fundraising deals using Claude API.
+Summarize RootData fundraising deals with Claude.
 
-For each deal, fetches the source URL content and calls Claude to generate
+For each deal, fetches the source URL content and calls the local model to generate
 a 2-3 sentence bilingual (Chinese-dominant) company introduction for the
 "Info" column in the final Excel report.
 
@@ -26,6 +26,9 @@ except ImportError:
 
 from dotenv import load_dotenv
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.utils import call_claude, CLAUDE_MODEL
+
 load_dotenv(override=True)
 
 DESKTOP_UA = (
@@ -33,8 +36,6 @@ DESKTOP_UA = (
     "AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/124.0.0.0 Safari/537.36"
 )
-
-CLAUDE_URL = "https://api.anthropic.com/v1/messages"
 
 MAIN_PROMPT = """你是加密货币行业分析师。根据以下信息为"{company}"写2-3句公司介绍，用于融资情报报告"Info"栏。
 要求：①中文为主，自然流畅；②公司名、产品名、技术术语保留英文；③涵盖核心业务、技术亮点、团队背景（如有）；④不提融资金额/轮次（已有单独列）。
@@ -67,7 +68,7 @@ def fetch_source_content(url: str) -> str:
 
 def generate_info(api_key: str, company: str, round_type: str,
                   amount_raw: str, source_content: str) -> str:
-    """Call Claude to generate a bilingual company intro."""
+    """Generate a bilingual company intro with Claude."""
     if source_content:
         prompt = MAIN_PROMPT.format(
             company=company,
@@ -78,27 +79,10 @@ def generate_info(api_key: str, company: str, round_type: str,
     else:
         prompt = FALLBACK_PROMPT.format(company=company)
 
-    try:
-        headers = {
-            "Content-Type": "application/json",
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-        }
-        payload = {
-            "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 300,
-            "messages": [{"role": "user", "content": prompt}],
-        }
-        resp = requests.post(CLAUDE_URL, json=payload, headers=headers, timeout=30)
-        resp.raise_for_status()
-        result = resp.json()
-        if "content" in result and result["content"]:
-            return result["content"][0]["text"].strip()
-        print("  WARNING: Unexpected Claude response format")
-        return ""
-    except Exception as e:
-        print(f"  WARNING: Claude call failed for {company}: {e}")
-        return ""
+    text = call_claude(prompt, max_tokens=2048)
+    if not text:
+        print(f"  WARNING: no company intro generated for {company}")
+    return text
 
 
 def summarize_rootdata(input_file: str, output_file: str, api_key: str,
@@ -115,14 +99,8 @@ def summarize_rootdata(input_file: str, output_file: str, api_key: str,
 
     print(f"Loaded {len(deals)} deals from {input_file}")
 
-    # Estimate cost: ~$0.01 per deal (fetch + Claude call)
-    estimated_cost = len(deals) * 0.01
-    if not skip_confirm:
-        print(f"Estimated cost: ~${estimated_cost:.2f} USD ({len(deals)} deals × ~$0.01)")
-        answer = input("Proceed? [y/N] ").strip().lower()
-        if answer != "y":
-            print("Aborted.")
-            sys.exit(0)
+    # One short call per deal: ~2k input + ~400 output tokens at Opus 5 list rates.
+    print(f"Estimated cost: ~${len(deals) * 0.02:.2f} ({len(deals)} deals)")
 
     # Load existing output for resume support
     existing = {}
@@ -188,10 +166,8 @@ def main():
                         help="Skip cost confirmation prompt")
     args = parser.parse_args()
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("ERROR: ANTHROPIC_API_KEY not set in environment / .env")
-        sys.exit(1)
+    api_key = None  # key is read from the environment by the Anthropic client
+    print(f"Summarizing with Claude ({CLAUDE_MODEL})")
 
     summarize_rootdata(
         input_file=args.input,

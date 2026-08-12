@@ -21,6 +21,9 @@ import requests
 from datetime import datetime
 from dotenv import load_dotenv
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.utils import call_claude, translate_to_chinese_claude
+
 load_dotenv(override=True)
 
 try:
@@ -244,35 +247,17 @@ LABELS_ZH = {
 DEAL_HEADERS_ZH = ["公司", "轮次", "主题契合度", "关注原因", "融资额"]
 
 
-def _translate_single(text: str, api_key: str) -> str:
-    """Translate a single text string to Chinese. Returns original on failure."""
+def _translate_single(text: str, api_key: str = None) -> str:
+    """
+    Translate a single string to Chinese with Claude.
+
+    api_key stays in the signature so existing call sites keep working; the
+    Anthropic client reads ANTHROPIC_API_KEY from the environment. Returns the
+    original text on failure, as before.
+    """
     if not text:
         return text
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    payload = {
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 4096,
-        "messages": [{"role": "user", "content":
-            "将以下文本翻译成简体中文。公司名、人名保持英文。只输出翻译结果，不要其他说明。\n\n" + text}],
-    }
-    for attempt in range(3):
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=120)
-            resp.raise_for_status()
-            result = resp.json()["content"][0]["text"].strip()
-            if result:
-                return result
-        except Exception as e:
-            if attempt == 2:
-                print(f"  WARNING: Translation failed: {e} — using original")
-                return text
-        time.sleep(4 * (attempt + 1))
-    return text
+    return translate_to_chinese_claude(text) or text
 
 
 def _batch_translate(texts: dict, api_key: str) -> dict:
@@ -283,40 +268,29 @@ def _batch_translate(texts: dict, api_key: str) -> dict:
         "保留 JSON 结构和键名不变。公司名、人名保持英文。只输出 JSON，不要其他内容。\n\n"
         + json.dumps(texts, ensure_ascii=False)
     )
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    payload = {
-        "model": "claude-haiku-4-5-20251001",
-        "max_tokens": 2048,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    for attempt in range(3):
-        try:
-            resp = requests.post(url, json=payload, headers=headers, timeout=60)
-            resp.raise_for_status()
-            text = resp.json()["content"][0]["text"].strip()
-            if "```" in text:
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            return json.loads(text.strip())
-        except Exception as e:
-            if attempt == 2:
-                print(f"  WARNING: Batch translation failed: {e} — using English")
-                return texts
-            time.sleep(4 * (attempt + 1))
-    return texts
+    raw = call_claude(prompt, max_tokens=4096)
+    if not raw:
+        print("  WARNING: Batch translation failed — using English")
+        return texts
+    if "```" in raw:
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    try:
+        return json.loads(raw.strip())
+    except Exception as e:
+        print(f"  WARNING: Batch translation returned unparseable JSON ({e}) — using English")
+        return texts
 
 
 def generate_insight_doc(memos_path: str, deals_path: str,
                           start_date: str, end_date: str, output_dir: str,
                           language: str = "en") -> str:
     zh = language == "zh"
-    api_key = os.getenv("ANTHROPIC_API_KEY") if zh else None
+    # The Anthropic client reads ANTHROPIC_API_KEY from the environment, so the
+    # old `and api_key` guards below — really asking "is a provider configured?"
+    # — were dropped rather than left to silently disable Chinese output.
+    api_key = None
 
     with open(memos_path, encoding="utf-8") as f:
         memos = json.load(f)
@@ -324,7 +298,7 @@ def generate_insight_doc(memos_path: str, deals_path: str,
     # Translate all memo text per theme:
     # - Short fields (theme/insight/rationale) in one batch call
     # - Long fields (bull/bear/partner) individually to avoid JSON truncation
-    if zh and api_key:
+    if zh:
         print("Translating themes to Chinese...")
         translated_memos = []
         for i, memo in enumerate(memos):
@@ -342,7 +316,7 @@ def generate_insight_doc(memos_path: str, deals_path: str,
             # Translate long debate fields individually
             bull    = _translate_single(debate.get("bull", ""),    api_key); time.sleep(1)
             bear    = _translate_single(debate.get("bear", ""),    api_key); time.sleep(1)
-            partner = _translate_single(debate.get("partner", ""), api_key); time.sleep(1)
+            partner = _translate_single(debate.get("partner", ""), api_key)
 
             m = dict(memo)
             m["theme"]     = short.get("theme",    memo.get("theme", ""))
@@ -356,7 +330,7 @@ def generate_insight_doc(memos_path: str, deals_path: str,
     if deals_path and os.path.exists(deals_path):
         with open(deals_path, encoding="utf-8") as f:
             deals = json.load(f)
-        if zh and api_key and deals:
+        if zh and deals:
             print("Translating deal sourcing to Chinese...")
             for deal in deals:
                 deal["thesis_fit"] = _translate_single(deal.get("thesis_fit", ""), api_key)

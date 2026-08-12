@@ -2,8 +2,8 @@
 """
 Deal Sourcing Agent
 
-Uses OpenAI web search to find the top 5 early-stage companies INCE
-should look at this week, based on the investment themes identified.
+Uses Claude's server-side web search to find the top 5 early-stage companies
+INCE should look at this week, based on the investment themes identified.
 
 Input:  .tmp/debate_memos.json
 Output: .tmp/deal_sourcing.json
@@ -13,13 +13,13 @@ import os
 import sys
 import json
 import argparse
-import time
-import requests
+
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.utils import call_claude_search
 
-OPENAI_MODEL = "gpt-4o-search-preview"
+load_dotenv(override=True)
 
 SOURCING_PROMPT = """You are a deal sourcing analyst at INCE, a VC firm focused on AI and deep tech.
 
@@ -32,21 +32,51 @@ Search the web and identify the TOP 5 early-stage companies (Seed to Series B) t
 - Pre-Series B preferred (seed, pre-seed, Series A)
 - Strong founding team signal
 
-Return a JSON array — no markdown, no preamble:
-[
-  {{
-    "company": "Company Name",
-    "url": "https://company.com",
-    "stage": "Seed / Series A / etc.",
-    "raise": "$XM (if known, else null)",
-    "thesis_fit": "1 sentence: which theme this fits and why INCE should care",
-    "why_now": "1 sentence: why this week / what's the catalyst",
-    "related_theme": "exact theme name from above"
-  }}
-]"""
+For each company report:
+- company: company name
+- url: company website or the most relevant source link
+- stage: Seed / Series A / etc. ("unknown" if not established)
+- raise: amount raised ("unknown" if not established)
+- thesis_fit: 1 sentence — which theme this fits and why INCE should care
+- why_now: 1 sentence — why this week / what's the catalyst
+- related_theme: exact theme name from the list above
+
+Only include companies you found real sources for. Fewer than 5 is correct if that is all you can verify."""
 
 
-def source_deals(memos: list, api_key: str) -> list:
+DEALS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "deals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "company": {"type": "string"},
+                    "url": {"type": "string"},
+                    "stage": {"type": "string"},
+                    "raise": {"type": "string"},
+                    "thesis_fit": {"type": "string"},
+                    "why_now": {"type": "string"},
+                    "related_theme": {"type": "string"},
+                },
+                "required": ["company", "url", "stage", "raise", "thesis_fit",
+                             "why_now", "related_theme"],
+                "additionalProperties": False,
+            },
+        }
+    },
+    "required": ["deals"],
+    "additionalProperties": False,
+}
+
+
+def source_deals(memos: list, api_key: str = None) -> list:
+    """Find sourcing targets with Claude's server-side web search.
+
+    api_key is accepted for call-site compatibility and ignored — the Anthropic
+    client reads ANTHROPIC_API_KEY from the environment.
+    """
     themes_text = "\n".join(
         f"- [{m['signal_strength']}/5] {m['theme']}: {m['insight']}"
         for m in memos
@@ -54,42 +84,14 @@ def source_deals(memos: list, api_key: str) -> list:
 
     prompt = SOURCING_PROMPT.format(themes=themes_text)
 
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    payload = {
-        "model": OPENAI_MODEL,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 2048,
-    }
-
     print("  Searching for deal sourcing targets...")
-    for attempt in range(3):
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=90)
-            response.raise_for_status()
-            text = response.json()["choices"][0]["message"]["content"].strip()
-            break
-        except Exception as e:
-            if attempt == 2:
-                print(f"  WARNING: Deal sourcing failed: {e}")
-                return []
-            time.sleep(10 * (attempt + 1))
-
-    if "```" in text:
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    text = text.strip()
-
-    try:
-        deals = json.loads(text)
-        return deals if isinstance(deals, list) else []
-    except json.JSONDecodeError:
-        print("  WARNING: Could not parse deal sourcing response")
+    result = call_claude_search(prompt, schema=DEALS_SCHEMA, max_uses=12,
+                                label="deal sourcing")
+    if not result:
         return []
+
+    deals = result.get("deals")
+    return deals if isinstance(deals, list) else []
 
 
 def main():
@@ -98,15 +100,14 @@ def main():
     parser.add_argument("--output", default=".tmp/deal_sourcing.json", help="Output path")
     args = parser.parse_args()
 
-    openai_key = os.getenv("OPENAI_API_KEY")
-    if not openai_key:
-        print("ERROR: OPENAI_API_KEY not set")
+    if not os.getenv("ANTHROPIC_API_KEY"):
+        print("ERROR: ANTHROPIC_API_KEY not set")
         sys.exit(1)
 
     with open(args.input, encoding="utf-8") as f:
         memos = json.load(f)
 
-    deals = source_deals(memos, openai_key)
+    deals = source_deals(memos)
 
     os.makedirs(os.path.dirname(args.output) if os.path.dirname(args.output) else ".", exist_ok=True)
     with open(args.output, "w", encoding="utf-8") as f:

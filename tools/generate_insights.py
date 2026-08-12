@@ -18,9 +18,10 @@ import argparse
 import requests
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.utils import call_claude, CLAUDE_MODEL
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+load_dotenv(override=True)
 
 INSIGHT_PROMPT = """You are a senior VC analyst at INCE, a venture capital firm focused on AI and emerging technology.
 
@@ -56,24 +57,15 @@ def generate_insights(articles: list, api_key: str) -> list:
 
     prompt = INSIGHT_PROMPT.format(n=len(articles), articles="\n".join(formatted))
 
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    payload = {
-        "model": CLAUDE_MODEL,
-        "max_tokens": 4096,
-        "messages": [{"role": "user", "content": prompt}],
-    }
+    print(f"  Clustering articles into investment themes ({CLAUDE_MODEL})...")
+    # Clustering is a judgment task over the whole week, not a rewrite — worth
+    # more thinking than the per-article default.
+    text = call_claude(prompt, max_tokens=8192, effort='medium')
+    if not text:
+        print("  ERROR: Claude returned nothing")
+        return []
 
-    print("  Clustering articles into investment themes...")
-    response = requests.post(url, json=payload, headers=headers, timeout=90)
-    response.raise_for_status()
-
-    text = response.json()["content"][0]["text"].strip()
-    # Strip markdown code fences if present
+    # Strip markdown code fences the model often wraps around JSON
     if "```" in text:
         text = text.split("```")[1]
         if text.startswith("json"):
@@ -106,10 +98,7 @@ def main():
     parser.add_argument("--output", default=".tmp/insights.json", help="Output path")
     args = parser.parse_args()
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("ERROR: ANTHROPIC_API_KEY not set")
-        sys.exit(1)
+    api_key = None  # local model — no key needed
 
     with open(args.input, encoding="utf-8") as f:
         articles = json.load(f)

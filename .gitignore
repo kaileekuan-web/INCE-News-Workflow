@@ -8,6 +8,15 @@
 .venv/
 .venv.broken-stale-path.bak/
 
-# Live API keys. Regenerate these from the provider console on the new
-# machine; never in git history, where they are permanent.
+# Live API keys and OAuth secrets. Regenerate these from the provider console
+# on the new machine; never in git history, where they are permanent.
+#
+# token.json holds a Google refresh_token + client_secret, and both
+# credentials.json files hold an OAuth client secret. CLAUDE.md already
+# described these as gitignored, but they were not actually listed here --
+# combined with the `git add .` that section 8 of HANDOFF.md used to
+# recommend, one routine deploy would have published them.
 .env
+credentials.json
+token.json
+.claude/credentials.json

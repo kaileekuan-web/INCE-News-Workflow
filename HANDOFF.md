@@ -27,7 +27,7 @@ It produces **4 types of reports**, each run on-demand through a web dashboard:
 
 | Report | Output | Sources | Frequency |
 |--------|--------|---------|-----------|
-| **AI News** | Word doc (`.docx`) | TechCrunch, TLDR AI, TLDR Main newsletters, Wechat 公众号 | Bi-weekly |
+| **AI News** | Word doc (`.docx`) | **X/Twitter (primary)**, optional Wechat 公众号 | Bi-weekly |
 | **Deeptech News** | Word doc (`.docx`) | Wechat 公众号 | Bi-weekly |
 | **Consumer News** | Word doc (`.docx`) | Wechat 公众号 | Bi-weekly |
 | **Crypto Fundraising** | Excel spreadsheet (`.xlsx`) | RootData.com | On-demand |
@@ -63,9 +63,8 @@ User clicks "Download" → gets the file
 **Intermediate files:** Each step in the pipeline writes a `.json` file to `.tmp/`. If a step fails, you can inspect these files to understand what happened. They are temporary and safe to delete.
 
 **AI models used:**
-- **Claude** (`claude-sonnet-4-20250514`) — article summarization and Chinese translation (default)
-- **OpenAI GPT** (`gpt-4o-search-preview`) — live web search for fundraising news
-- **Google Gemini** — optional free alternative for summarization (1500 req/day limit)
+- **Claude** (`claude-opus-5`) — everything: article summarization, relevance scoring, Chinese translation, funding extraction, executive summaries, insights, and the fundraising web search (via Claude's server-side `web_search` tool). Override the model for a whole run with `NEWS_CLAUDE_MODEL` in `.env` (e.g. `claude-sonnet-5` to cut cost).
+- **Google Gemini** — optional free alternative for summarization only (1500 req/day limit, `--provider gemini`)
 
 ---
 
@@ -101,8 +100,10 @@ Each tool is a standalone Python script that does one thing well.
 
 | Script | What It Does | Data Source | Output |
 |--------|-------------|-------------|--------|
-| `collect_techcrunch.py` | Fetches AI articles from TechCrunch | NewsAPI.org (fallback: RSS) | `.tmp/raw_techcrunch.json` |
-| `collect_tldr.py` | Reads TLDR AI and TLDR Main email newsletters | Gmail API (your inbox) | `.tmp/raw_tldr_ai.json`, `.tmp/raw_tldr_main.json` |
+| `collect_x.py` | **Primary AI News source.** Pulls the accounts in `x_accounts.txt` | Nitter RSS mirrors, falling back to Claude web search per account | `.tmp/raw_x.json` |
+| `collect_x_claude.py` | The fallback above; also runnable standalone | Claude web search | `.tmp/raw_x_claude.json` |
+| `collect_techcrunch.py` | Fetches AI articles from TechCrunch (not used by the AI News pipeline) | NewsAPI.org (fallback: RSS) | `.tmp/raw_techcrunch.json` |
+| `collect_tldr.py` | Reads TLDR AI and TLDR Main email newsletters (not used by the AI News pipeline) | Gmail API (your inbox) | `.tmp/raw_tldr_ai.json`, `.tmp/raw_tldr_main.json` |
 | `collect_wechat.py` | Scrapes WeChat public account articles from a URL list | WeChat (direct web scrape) | `.tmp/raw_wechat.json` |
 | `collect_rootdata.py` | Scrapes crypto fundraising deals | RootData.com (headless Chrome) | `.tmp/raw_rootdata.json` |
 | `collect_substack.py` | Fetches Z Potentials newsletter via RSS | Substack | `.tmp/raw_substack.json` |
@@ -111,7 +112,8 @@ Each tool is a standalone Python script that does one thing well.
 
 | Script | What It Does |
 |--------|-------------|
-| `summarize_articles.py` | Fetches full article content, generates AI summaries. Supports `--provider claude/openai/gemini`, `--language zh` for Chinese output. |
+| `summarize_articles.py` | Fetches full article content, generates AI summaries. `--provider claude` (default) / `gemini` / `openai`, `--language zh` for Chinese output. Summary length scales to source length and every figure is checked against the source. |
+| `grounding.py` | Arithmetic grounding check — normalizes figures on both sides (so `$50 million` matches `5000万美元`) and reports any number in a summary the source doesn't support. Run `python tools/grounding.py` for its self-tests. |
 | `summarize_rootdata.py` | Generates bilingual company descriptions for crypto deals using Claude. |
 
 **Document Generators**
@@ -129,7 +131,7 @@ Each tool is a standalone Python script that does one thing well.
 |--------|-------------|
 | `utils.py` | Shared functions: date validation, text cleaning, deduplication |
 | `detect_funding.py` | Keyword-based funding event classifier (not used in current main workflows) |
-| `translate_content.py` | OpenAI-based translation utility (superseded by Claude translation in `generate_word_doc.py`) |
+| `translate_content.py` | Legacy OpenAI-based translation utility, not used by any pipeline (superseded by `translate_to_chinese_claude` in `tools/utils.py`) |
 
 ### `workflows/` — Step-by-Step SOPs
 
@@ -137,7 +139,7 @@ Markdown files that document exactly how to run each pipeline, including command
 
 | File | Covers |
 |------|--------|
-| `collect_ai_news.md` | AI News pipeline (TechCrunch + TLDR + WeChat → Word doc) |
+| `collect_ai_news.md` | AI News pipeline (X/Twitter + optional WeChat → Word doc) |
 | `collect_consumer_news.md` | Consumer News pipeline (WeChat → Chinese Word doc) |
 
 ### Config & Credentials
@@ -271,8 +273,9 @@ All API keys live in the `.env` file at the project root. **Never commit this fi
 
 | Variable in `.env` | Service | Free Tier? | Where to Get It | Used For |
 |--------------------|---------|-----------|----------------|---------|
-| `ANTHROPIC_API_KEY` | Anthropic Claude | No | [console.anthropic.com](https://console.anthropic.com) → API Keys | Article summarization and Chinese translation (default for all pipelines) |
-| `OPENAI_API_KEY` | OpenAI | No (requires credits) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | Fundraising news search via `gpt-4o-search-preview` (used in all Word doc generators) |
+| `ANTHROPIC_API_KEY` | Anthropic Claude | No | [console.anthropic.com](https://console.anthropic.com) → API Keys | **Required.** Every LLM call in every pipeline: summarization, scoring, translation, funding extraction, and the fundraising web search |
+| `NEWS_CLAUDE_MODEL` | — | — | optional `.env` override | Model for the whole pipeline (default `claude-opus-5`). Also `NEWS_CLAUDE_EFFORT` (default `low`) and `NEWS_CLAUDE_MAX_TOKENS` (default `4096`) |
+| `OPENAI_API_KEY` | OpenAI | No (requires credits) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | Legacy only — `translate_content.py` and `--provider openai`. No pipeline needs it. |
 | `NEWSAPI_ORG_KEY` | NewsAPI.org | Yes (100 req/day) | [newsapi.org](https://newsapi.org) → Get API Key | TechCrunch article collection for AI News pipeline |
 | `GOOGLE_GEMINI_API_KEY` | Google AI Studio | Yes (1500 req/day) | [aistudio.google.com](https://aistudio.google.com) | Optional alternative summarizer — use `--provider gemini` |
 
@@ -300,8 +303,8 @@ These are approximate costs per report run:
 
 | API | Cost Driver | Estimated Cost |
 |-----|------------|----------------|
-| Anthropic Claude | Summarization + translation | $0.50–$1.50 per run |
-| OpenAI GPT | Funding news search | $0.05–$0.15 per run |
+| Anthropic Claude | Summarization + translation + funding extraction | ~$0.03 per article at Opus 5 list rates |
+| Anthropic Claude | Fundraising web search | One multi-search turn per day in the range, plus $10 per 1,000 searches |
 | NewsAPI.org | Article fetching | Free (within 100 req/day) |
 | Google Gemini | Summarization (if used) | Free (within 1500 req/day) |
 
@@ -385,10 +388,17 @@ The app is containerized with Docker. When you push code to the main git branch,
 ### Deploying Changes
 
 ```bash
-git add .
+git add -A ':!credentials.json' ':!token.json' ':!.claude/'
 git commit -m "describe your change"
 git push origin main
 ```
+
+> ⚠️ Those exclusions matter. `credentials.json`, `token.json` and
+> `.claude/credentials.json` contain live Google OAuth secrets (including a
+> refresh token). They are in `.gitignore` as of 2026-08-12, so a plain
+> `git add .` is safe now — the explicit form above is belt-and-braces. If you
+> ever see them appear in `git status` as staged, stop and unstage them:
+> secrets in git history are permanent and require rotating the credentials.
 
 Railway detects the push, builds the Docker image, and deploys it. The process takes 2–5 minutes. You can watch the build log in the Railway dashboard.
 
@@ -483,10 +493,18 @@ Then update `GMAIL_TOKEN_JSON` in Railway with the new token contents.
 
 ---
 
-### OpenAI quota error (funding section is empty)
+### A summary contains a number that isn't in the source
 
-**Symptom:** Log shows `insufficient_quota` or the fundraising table is missing in the output  
-**Fix:** Add billing credits at [platform.openai.com/billing](https://platform.openai.com/billing). OpenAI does not have a free tier for `gpt-4o-search-preview`.
+**Symptom:** the summarization step ends with `⚠ GROUNDING: N article(s) contain figures not found in the source`, listing article titles and figures
+**What it means:** the arithmetic check found a figure the source doesn't support, and the one repair pass didn't clear it. Those articles carry `grounding_flags` in `.tmp/summarized_articles.json`
+**Fix:** check those articles before sending the report. A clean run prints `✓ Grounding: every figure in every summary traces to its source` instead
+
+---
+
+### Anthropic credit error (summaries or funding section empty)
+
+**Symptom:** Log shows `WARNING: Claude call failed` mentioning credit balance, or summaries fall back to raw descriptions  
+**Fix:** Top up at [console.anthropic.com](https://console.anthropic.com) → Billing. Re-run the pipeline — completed articles are skipped, so only the failed ones are retried.
 
 ---
 
@@ -569,7 +587,7 @@ The AI News reports are intended to display both Chinese and English content sid
 ## Quick Reference — Running Each Pipeline
 
 ### AI News (bi-weekly)
-Requires: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `NEWSAPI_ORG_KEY`, Gmail OAuth
+Requires: `ANTHROPIC_API_KEY` (X/Twitter collection needs no key)
 ```
 Web app → /ai_news → enter dates → Run
 Output:  output/AI_News_YYYYMMDD_YYYYMMDD.docx
@@ -577,7 +595,7 @@ Time:    ~15–20 min | Cost: ~$1.00–2.00
 ```
 
 ### Consumer News (bi-weekly)
-Requires: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, WeChat URLs
+Requires: `ANTHROPIC_API_KEY`, WeChat URLs
 ```
 Web app → /consumer → enter dates + paste URLs → Run
 Output:  output/Consumer_News_YYYYMMDD_YYYYMMDD.docx
@@ -585,7 +603,7 @@ Time:    ~7–15 min | Cost: ~$0.35–0.75
 ```
 
 ### Deeptech News (bi-weekly)
-Requires: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, WeChat URLs
+Requires: `ANTHROPIC_API_KEY`, WeChat URLs
 ```
 Web app → /deeptech → enter dates + paste URLs → Run
 Output:  output/Deeptech_News_YYYYMMDD_YYYYMMDD.docx

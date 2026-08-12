@@ -1,19 +1,19 @@
 # Collect Consumer News (Bi-Weekly)
 
 ## Objective
-Collect consumer tech news from WeChat public account articles, summarize in Chinese using a local Ollama model, and output a formatted Word document with two sections: (1) Consumer Tech News table and (2) Consumer Tech Fundraising News table sourced from a live ChatGPT web search.
+Collect consumer tech news from WeChat public account articles, summarize in Chinese using Claude, and output a formatted Word document with two sections: (1) Consumer Tech News table and (2) Consumer Tech Fundraising News table sourced from a live Claude web search.
 
 ## Required Inputs
 - **WeChat article URLs** in `wechat_urls.txt` (one URL per line, `#` for comments)
 - **Start date** (YYYY-MM-DD) — used for the document header and funding search
 - **End date** (YYYY-MM-DD)
-- **Local Ollama** running with a pulled model (no API key, no cost) — see collect_ai_news.md for setup
+- **`ANTHROPIC_API_KEY`** in `.env` — every inference in this workflow runs on Claude; see collect_ai_news.md for the optional `NEWS_CLAUDE_*` overrides
 - **API keys** in `.env`:
-  - `OPENAI_API_KEY` — for consumer funding news search (ChatGPT with web search)
+  - `ANTHROPIC_API_KEY` — also powers the consumer funding news search (Claude with the server-side web search tool)
 
 ## Tools Required
 1. `tools/collect_wechat.py` — Fetch WeChat articles from URL list
-2. `tools/summarize_articles.py` — Summarize articles in Chinese via local Ollama
+2. `tools/summarize_articles.py` — Summarize articles in Chinese via Claude
 3. `tools/generate_consumer_doc.py` — Word document generation with funding section
 4. `tools/utils.py` — Shared utilities (imported by other tools)
 
@@ -71,10 +71,10 @@ print(f'Deduped: {len(unique)} articles')
 python tools/summarize_articles.py \
   --input .tmp/classified_wechat.json \
   --output .tmp/summarized_wechat.json \
-  --provider ollama --language zh --yes
+  --provider claude --language zh --yes
 ```
 
-- Uses the local Ollama model (`qwen2.5:32b-instruct-q4_K_M` by default) with a Chinese-language prompt
+- Uses Claude (`claude-opus-5` by default) with a Chinese-language prompt
 - Generates 2-4 bullet point summaries in Simplified Chinese per article
 - Fetches full article content before summarizing (falls back to description if fetch fails)
 - `--yes` skips the cost confirmation prompt
@@ -90,10 +90,10 @@ python tools/generate_consumer_doc.py \
 ```
 
 - **Section 1 — 消费科技新闻摘要**: 2-column table (日期 | 标题+中文摘要), sorted oldest → newest, titles hyperlinked
-- **Section 2 — 消费科技融资动态**: 6-column table (Date | Company | Summary | Stage | Raise | Investors) via ChatGPT web search
+- **Section 2 — 消费科技融资动态**: 6-column table (Date | Company | Summary | Stage | Raise | Investors) via Claude web search
 - Output: `output/Consumer_News_YYYYMMDD_YYYYMMDD.docx`
 - Estimated time: 2-5 minutes
-- Estimated cost: ~$0.05–0.15 for funding section (OpenAI)
+- Estimated cost: the funding section runs one Claude web-search turn per day in the range
 
 ## Full Pipeline (Quick Reference)
 
@@ -121,7 +121,7 @@ print(f'Deduped: {len(unique)} articles')
 python tools/summarize_articles.py \
   --input .tmp/classified_wechat.json \
   --output .tmp/summarized_wechat.json \
-  --provider ollama --language zh --yes
+  --provider claude --language zh --yes
 
 # Phase 5: Generate Word doc
 python tools/generate_consumer_doc.py \
@@ -136,12 +136,12 @@ Output: `output/Consumer_News_YYYYMMDD_YYYYMMDD.docx`
 **Primary Deliverable:**
 - Word document: `output/Consumer_News_[start]_[end].docx`
   - **消费科技新闻摘要** table: all articles sorted oldest → newest, 2 columns (日期 | 超链接标题+中文摘要)
-  - **消费科技融资动态** table: consumer tech funding events from ChatGPT web search, 6 columns
+  - **消费科技融资动态** table: consumer tech funding events from Claude web search, 6 columns
 
 **Intermediate Files (in `.tmp/`):**
 - `raw_wechat.json` — fetched WeChat articles (title, date, content)
 - `classified_wechat.json` — deduplicated articles
-- `summarized_wechat.json` — articles with Ollama-generated Chinese summaries
+- `summarized_wechat.json` — articles with Claude-generated Chinese summaries
 
 ## Edge Cases & Error Handling
 
@@ -166,9 +166,9 @@ Output: `output/Consumer_News_YYYYMMDD_YYYYMMDD.docx`
 
 ### Summarization
 
-**Ollama unreachable or timeout:**
-- **Symptom**: `WARNING: Could not reach Ollama at http://localhost:11434` or `WARNING: Ollama call failed: ...`
-- **Solution**: Confirm `ollama serve` (or the Ollama app) is running and the model is pulled; script falls back to article description otherwise. Re-run with `--max` to reprocess specific articles.
+**Claude call failed:**
+- **Symptom**: `WARNING: Claude call failed: ...` or `WARNING: ANTHROPIC_API_KEY not set in .env`
+- **Solution**: Check the key in `.env` and that `anthropic` is installed; the script falls back to the article description otherwise. Re-run — completed articles are skipped, so only failures are retried.
 
 **Summaries in English instead of Chinese:**
 - **Check**: Confirm `--language zh` flag is set
@@ -176,13 +176,13 @@ Output: `output/Consumer_News_YYYYMMDD_YYYYMMDD.docx`
 
 ### Funding Section
 
-**OpenAI quota error:**
-- **Symptom**: `insufficient_quota` in output
-- **Solution**: Add billing credits at platform.openai.com/billing
+**Credit/quota error:**
+- **Symptom**: a 400 about credit balance, or repeated `WARNING: Claude call failed`
+- **Solution**: Top up at console.anthropic.com → Billing
 
 **No funding events returned:**
 - **Symptom**: Section shows "此日期范围内未找到消费科技融资事件"
-- **Cause**: Legitimate (quiet period) or ChatGPT couldn't find events
+- **Cause**: Legitimate (quiet period), or the search turn paused and gave up after 3 resumes
 - **Solution**: Try running again, or manually check and add events
 
 ## Success Metrics
@@ -194,13 +194,17 @@ After each run, verify:
 4. **Funding section**: Populated with relevant consumer tech events
 
 ## Typical Cost per Run
-- Summarization (local Ollama): $0.00
-- Funding search (OpenAI): ~$0.05–0.15
-- **Total**: ~$0.00–0.15
+- Summarization (Claude): ~$0.03 per article at Opus 5 list rates
+- Funding search (Claude web search): one multi-search turn per day in the range, plus $10 per 1,000 searches
+- **Total**: scales with article count — set `NEWS_CLAUDE_MODEL=claude-sonnet-5` in `.env` for a cheaper run
 
 ## Lessons Learned
 
-### 2026-07-20 Update (current)
+### 2026-08-12 Update (current)
+- **Back on Claude, end to end.** Summarization, classification, translation, and the funding web search all run on the Anthropic API — `ANTHROPIC_API_KEY` is the only key this workflow needs. See the 2026-08-12 entry in `collect_ai_news.md` for the full change list and the `NEWS_CLAUDE_*` overrides.
+- **The consumer-mode second-pass "editor" call is now opt-in** (`CONSUMER_REFINE=1` in the environment). It was added to compensate for a small local model; on Claude the draft prompt alone is enough, and the second pass doubled per-article cost.
+
+### 2026-07-20 Update
 - **Removed Claude/Anthropic entirely.** Summarization now runs on the local **Ollama** model (`qwen2.5:32b-instruct-q4_K_M` by default) instead of `api.anthropic.com` — zero per-run cost for this step. Only the optional OpenAI funding web search still costs anything. Expect a modest quality tradeoff vs. Claude on messy source HTML.
 - WeChat remains the source for this workflow (unlike the AI news workflow, which switched to Twitter-only) since there's no equivalent automated multi-source setup to consolidate here.
 

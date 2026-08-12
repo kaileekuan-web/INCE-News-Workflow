@@ -25,8 +25,8 @@ gspread>=5.11.0
 python-dotenv>=1.0.0
 
 # AI/LLM APIs
-openai>=1.12.0                     # GPT translation
-# anthropic>=0.7.0
+anthropic>=0.116.0                 # Claude — every inference in the pipeline
+openai>=1.12.0                     # legacy: translate_content.py + --provider openai
 
 # News collection
 newsapi-python>=0.2.7              # NewsAPI.org client
@@ -39,8 +39,12 @@ python-docx>=1.1.0                 # DOCX creation
 pytz>=2023.3                       # Timezone handling
 python-dateutil>=2.8.2             # Date parsing
 
-# Claim envelope contract for the shared verification service (see
-# central-dashboard/projects/verification-service). Local editable install --
-# there is no PyPI package, this is the one shared schema module every
+# Claim envelope contract for the shared verification service. Local editable
+# install -- there is no PyPI package, this is the one shared schema module every
 # instrumented tool imports.
--e ../verification-service/envelope
+#
+# The path here was wrong (../verification-service/envelope) until 2026-08-12, so
+# the install silently no-op'd and tools/verify_emit.py logged a warning and
+# submitted nothing. If funding claims stop reaching the service, check this path
+# resolves before debugging anything else.
+-e ../INCE-Verification-Service/envelope

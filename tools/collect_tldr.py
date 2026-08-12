@@ -30,6 +30,7 @@ try:
     from google.oauth2.credentials import Credentials
     from google_auth_oauthlib.flow import InstalledAppFlow
     from google.auth.transport.requests import Request
+    from google.auth.exceptions import RefreshError
     from googleapiclient.discovery import build
     from bs4 import BeautifulSoup
 except ImportError:
@@ -113,7 +114,11 @@ def get_gmail_service():
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             print("  Refreshing expired Gmail token...")
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except RefreshError as e:
+                _print_reauth_instructions(e)
+                return None
 
             # Persist refreshed token back to disk (local) or env hint (server)
             if not token_json_env and os.path.exists('token.json'):
@@ -124,11 +129,32 @@ def get_gmail_service():
                 print("  on Railway with this new value to avoid re-refreshing:")
                 print(f"  {creds.to_json()}")
         else:
-            print("ERROR: Gmail token is invalid and cannot be refreshed.")
-            print("  Delete token.json locally, re-authenticate, then update GMAIL_TOKEN_JSON on Railway.")
-            sys.exit(1)
+            _print_reauth_instructions("token invalid and no refresh_token available")
+            return None
 
     return build('gmail', 'v1', credentials=creds)
+
+
+def _print_reauth_instructions(err):
+    """
+    Explain a dead Gmail refresh token without killing the pipeline.
+
+    `invalid_grant` on refresh means Google revoked the refresh token. The usual
+    causes: the OAuth consent screen is still in "Testing" mode (those refresh
+    tokens expire after 7 days), the account password changed, or access was
+    revoked at myaccount.google.com/permissions. Refreshing cannot recover from
+    this — the only fix is a fresh browser consent.
+
+    TLDR is a secondary source, so we return None and let the caller carry on
+    with an empty result rather than aborting the whole run.
+    """
+    print(f"  WARNING: Gmail token could not be refreshed ({err})")
+    print("  TLDR newsletters will be SKIPPED for this run. Other sources are unaffected.")
+    print("  To fix:")
+    print("    1. rm token.json && python auth_gmail.py     (re-consent in the browser)")
+    print("    2. Copy the new token.json contents into the GMAIL_TOKEN_JSON env var on Railway")
+    print("    3. To stop this recurring every 7 days, set the OAuth consent screen to")
+    print("       'In production' at console.cloud.google.com > APIs & Services > OAuth consent screen")
 
 
 def extract_email_body(message):
@@ -426,15 +452,19 @@ def main():
         print(f"ERROR: {e}")
         sys.exit(1)
 
-    # Get Gmail service
+    # Get Gmail service. None means auth is dead — write empty outputs and exit
+    # cleanly so the rest of the pipeline still runs on its other sources.
     gmail_service = get_gmail_service()
 
-    # Collect both newsletters
-    print("\n=== Collecting TLDR AI ===")
-    tldr_ai = fetch_tldr_from_gmail(gmail_service, 'ai', args.start_date, args.end_date)
+    if gmail_service is None:
+        tldr_ai, tldr_main = [], []
+    else:
+        # Collect both newsletters
+        print("\n=== Collecting TLDR AI ===")
+        tldr_ai = fetch_tldr_from_gmail(gmail_service, 'ai', args.start_date, args.end_date)
 
-    print("\n=== Collecting TLDR Main (AI-filtered) ===")
-    tldr_main = fetch_tldr_from_gmail(gmail_service, 'main', args.start_date, args.end_date)
+        print("\n=== Collecting TLDR Main (AI-filtered) ===")
+        tldr_main = fetch_tldr_from_gmail(gmail_service, 'main', args.start_date, args.end_date)
 
     # Save outputs
     os.makedirs(args.output_dir, exist_ok=True)

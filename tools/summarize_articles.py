@@ -3,7 +3,7 @@
 Fetch full article content and generate bullet point summaries using AI
 
 Supports:
-- Ollama (local, FREE) - qwen2.5:32b-instruct-q4_K_M by default
+- Claude (Anthropic API) - default, claude-opus-5
 - Google Gemini (FREE - 1500 requests/day)
 - OpenAI GPT (Paid - requires payment method)
 
@@ -35,7 +35,8 @@ except ImportError:
     sys.exit(1)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import call_ollama
+from tools.utils import call_claude
+from tools.grounding import unsupported_figures
 
 
 def is_x_twitter_link(url: str, timeout: int = 5) -> bool:
@@ -127,19 +128,72 @@ def fetch_article_content(url: str, timeout: int = 10) -> str:
         return ""
 
 
+# ── Grounding ─────────────────────────────────────────────────────────────────
+# Attached to every summarization prompt. The two rules that matter most:
+#
+#   1. No outside knowledge. The model knows a great deal about OpenAI and
+#      Anthropic, and without this it will helpfully blend that in — producing
+#      sentences that read as reporting but trace to nothing in the source.
+#   2. Length follows the source. A 200-character tweet asked for a 6-sentence
+#      summary has to invent four sentences of significance to fill the space.
+#      That is the single largest driver of fabricated "why it matters" claims,
+#      and it is a prompt problem, not a model problem — see _length_rule().
+GROUNDING_RULES_ZH = (
+    "【事实约束——严格遵守】\n"
+    "1. 只能使用下方原文中明确出现的信息。禁止补充你已知的背景知识、行业常识、"
+    "公司历史或对后续发展的推测。\n"
+    "2. 数字、金额、估值、比例、日期、公司名、产品名、人名、机构名必须与原文一致。"
+    "原文没有的数字，一律不得出现在摘要中。\n"
+    "3. 原文信息少时，摘要就写短。宁可只写两句真实内容，也不要用推测、泛泛而谈或"
+    "行业套话把篇幅凑满。\n"
+    "4. 不确定或原文未写明的内容直接省略。不要写「可能」「预计」「有望」这类推测。\n"
+    "5. 不要用任何句子说明原文缺了什么——「原文未提及」「未说明具体内容」「未透露细节」"
+    "「具体信息不详」等表述一律不要出现。原文只写了一句话，摘要就只写那一句的事实。\n"
+)
+
+GROUNDING_RULES_EN = (
+    "STRICT GROUNDING RULES:\n"
+    "1. Use only information explicitly present in the source below. Do not add "
+    "background knowledge, industry context, company history, or predictions.\n"
+    "2. Every figure, amount, valuation, percentage, date and name must match the "
+    "source exactly. Never introduce a number the source does not contain.\n"
+    "3. When the source is thin, write less. Two true sentences beat six padded ones.\n"
+    "4. Omit anything uncertain rather than hedging it, and never write sentences "
+    "about what the source failed to mention.\n"
+)
+
+
+def _length_rule(text: str) -> str:
+    """
+    Summary length instruction scaled to how much source material there is.
+
+    A tweet supports one or two sentences of fact. Asking for the same 4-6
+    sentences we want from a full article is an instruction to pad, and padding
+    is where invented significance comes from.
+    """
+    n = len(text or '')
+    if n < 400:
+        return "1-2句"
+    if n < 1200:
+        return "2-4句"
+    return "4-6句"
+
+
 SUMMARY_PROMPT_EN = (
     "You are a news summarizer. Create a concise bullet point summary (2-4 bullets) "
-    "highlighting the key information. Focus on what happened, who is involved, and why it matters.\n\n"
-    "Article to summarize:\n{text}\n\n"
+    "highlighting the key information. Focus on what happened and who is involved.\n\n"
+    + GROUNDING_RULES_EN +
+    "\nArticle to summarize:\n{text}\n\n"
     "Provide only the bullet points, no introduction or conclusion."
 )
 
 SUMMARY_PROMPT_ZH = (
-    "你是一位AI行业分析师。请用简洁流畅的中文段落（4-6句话）总结以下文章，"
-    "内容涵盖：发生了什么、涉及哪些方、事件意义，以及对行业或市场的潜在影响。"
+    "你是一位AI行业分析师。请用简洁流畅的中文段落（{length_rule}）总结以下文章，"
+    "内容涵盖：发生了什么、涉及哪些方，以及原文本身已经说明的意义或影响。"
     "将影响与启示自然融入叙述，不要单独列出，也不要使用列表或要点形式。"
     "摘要须直接从事实开始，不要使用「本文报道」、「文章介绍」等引导语。\n\n"
-    "待总结的文章：\n{text}\n\n"
+    + GROUNDING_RULES_ZH +
+    "\n待总结的文章：\n{text}\n\n"
     "只输出中文摘要段落，不需要标题或其他说明。"
 )
 
@@ -170,9 +224,10 @@ SUMMARY_PROMPT_AI = (
     "   \"regulatory\"：监管政策、法规变化、政府动向\n"
     "   \"research\"：研究成果、学术发现、技术验证\n"
     "   \"other\"：不属于以上类别\n\n"
-    "4. summary（中文摘要）：4-6句自然段，涵盖发生了什么、涉及方、为何重要、对行业或投资格局的潜在影响。"
+    "4. summary（中文摘要）：{length_rule}自然段，涵盖发生了什么、涉及方，以及原文本身已说明的意义。"
     "直接从事实开始，不用「本文报道」等引导语。\n\n"
-    "仅返回JSON，不含其他文字：\n"
+    + GROUNDING_RULES_ZH +
+    "\n仅返回JSON，不含其他文字：\n"
     "{{\"category\": \"模型与研究\", \"relevance\": 4, \"vc_signal\": \"research\", \"summary\": \"...\"}}\n\n"
     "文章内容：\n{text}"
 )
@@ -244,12 +299,14 @@ CONSUMER_REFINE_PROMPT = """你是消费科技投研团队的资深编辑，正�
 def get_summary_prompt(text: str, language: str = 'en', consumer: bool = False,
                        categorize: bool = False) -> str:
     """Return the summarization prompt for the given language/mode."""
+    length_rule = _length_rule(text)
     if categorize:
-        return SUMMARY_PROMPT_AI.format(text=text)
+        return SUMMARY_PROMPT_AI.format(text=text, length_rule=length_rule)
     if consumer:
         return SUMMARY_PROMPT_CONSUMER.format(text=text)
-    template = SUMMARY_PROMPT_ZH if language == 'zh' else SUMMARY_PROMPT_EN
-    return template.format(text=text)
+    if language == 'zh':
+        return SUMMARY_PROMPT_ZH.format(text=text, length_rule=length_rule)
+    return SUMMARY_PROMPT_EN.format(text=text)
 
 
 def generate_summary_gemini(api_key: str, title: str, description: str, content: str, language: str = 'en') -> str:
@@ -378,17 +435,84 @@ def _parse_category_summary_json(text: str, fallback_summary: str) -> dict:
         return {'category': '行业动态', 'summary': fallback_summary}
 
 
-def generate_summary_ollama(title: str, description: str, content: str,
+REPAIR_PROMPT = (
+    "下面这段摘要中，有些数字在原文里找不到依据。请修正后重新输出。\n\n"
+    "找不到依据的数字：{figures}\n\n"
+    "修改要求：\n"
+    "- 删除这些数字，或改写成原文确实支持的说法。若删掉数字后整句仍成立，保留该句其余部分。\n"
+    "- 其他内容一字不改。不要重写风格、不要补充新信息、不要加入原文没有的数字。\n"
+    "- 不要写「原文未提及」之类说明缺失的句子。\n\n"
+    "原文：\n{source}\n\n"
+    "待修正的摘要：\n{summary}\n\n"
+    "{output_instruction}"
+)
+
+
+def _repair_ungrounded(summary: str, source: str, missing: list,
+                       as_json: bool = False) -> str:
+    """
+    One targeted repair pass for figures the source doesn't support.
+
+    This is deliberately not a general "check your work" pass — those make the
+    model second-guess correct output and cost a call on every article. It fires
+    only when the arithmetic check in tools/grounding.py found a specific
+    mismatch, and it is told exactly which figures to fix.
+    """
+    output_instruction = (
+        "仅返回修正后的JSON，格式与输入一致，不要包含其他文字。" if as_json
+        else "只输出修正后的摘要正文，不要其他说明。"
+    )
+    return call_claude(
+        REPAIR_PROMPT.format(
+            figures='、'.join(missing),
+            source=source,
+            summary=summary,
+            output_instruction=output_instruction,
+        ),
+        max_tokens=4096,
+    )
+
+
+def _ground_summary(summary: str, source: str, label: str = '') -> tuple:
+    """
+    Verify every figure in `summary` traces to `source`; repair once if not.
+
+    Returns (summary, unresolved_figures). A non-empty second element means the
+    repair pass did not fully clear the problem — the caller records it on the
+    article so a bad figure is visible in the data rather than only in the doc.
+    """
+    if not summary:
+        return summary, []
+
+    missing = unsupported_figures(summary, source)
+    if not missing:
+        return summary, []
+
+    print(f"  GROUNDING: {label}unsupported figure(s) {missing} — repairing")
+    repaired = _repair_ungrounded(summary, source, missing)
+    if not repaired:
+        return summary, missing
+
+    still_missing = unsupported_figures(repaired, source)
+    if len(still_missing) < len(missing):
+        if still_missing:
+            print(f"  GROUNDING: {label}still unsupported after repair: {still_missing}")
+        return repaired, still_missing
+
+    # Repair didn't help — keep the original rather than a rewrite that
+    # introduced its own problems, and flag it.
+    return summary, missing
+
+
+def generate_summary_claude(title: str, description: str, content: str,
                             language: str = 'en', consumer: bool = False,
                             categorize: bool = False) -> dict:
     """
-    Generate summary using the local Ollama model.
+    Generate summary using Claude.
 
     - Default: returns {'summary': str}
     - consumer mode: returns {'category': str, 'summary': str}
     - categorize mode: returns {'category': str, 'relevance': int, 'summary': str}
-
-    Runs entirely locally via Ollama — no API key, no per-request cost.
 
     Args:
         title: Article title
@@ -405,7 +529,7 @@ def generate_summary_ollama(title: str, description: str, content: str,
 
     fallback_summary = description if description else title
 
-    text = call_ollama(get_summary_prompt(text_to_summarize, language, consumer, categorize))
+    text = call_claude(get_summary_prompt(text_to_summarize, language, consumer, categorize))
 
     if not text:
         return {'summary': fallback_summary}
@@ -413,22 +537,27 @@ def generate_summary_ollama(title: str, description: str, content: str,
     if consumer:
         draft = _parse_category_summary_json(text, fallback_summary)
 
-        # Second pass: have the model critique its own draft against the source
-        # text and tighten it. This is the main quality lever available without
-        # a hosted model — one extra local, free inference call that catches
-        # hallucinated specifics and vague filler the draft prompt alone doesn't
-        # reliably avoid.
-        refine_prompt = CONSUMER_REFINE_PROMPT.format(
-            original_text=text_to_summarize,
-            draft_json=json.dumps(draft, ensure_ascii=False),
-        )
-        refined_text = call_ollama(refine_prompt, temperature=0.2)
-        if refined_text:
-            refined = _parse_category_summary_json(refined_text, draft['summary'])
-            # Guard against a degenerate refine pass (empty/truncated output)
-            if refined.get('summary') and len(refined['summary']) >= 20:
-                return refined
+        # The self-critique second pass runs only when explicitly asked for
+        # (CONSUMER_REFINE=1). It existed to close the quality gap between a
+        # small local model and a hosted one — that gap is what we just paid to
+        # remove, and asking Claude to re-check its own draft mostly buys
+        # over-verification at double the per-article cost. Kept behind a flag
+        # because it is cheap to re-enable if a run reads thin.
+        if os.getenv('CONSUMER_REFINE') == '1':
+            refine_prompt = CONSUMER_REFINE_PROMPT.format(
+                original_text=text_to_summarize,
+                draft_json=json.dumps(draft, ensure_ascii=False),
+            )
+            refined_text = call_claude(refine_prompt)
+            if refined_text:
+                refined = _parse_category_summary_json(refined_text, draft['summary'])
+                # Guard against a degenerate refine pass (empty/truncated output)
+                if refined.get('summary') and len(refined['summary']) >= 20:
+                    draft = refined
 
+        draft['summary'], flags = _ground_summary(draft['summary'], text_to_summarize)
+        if flags:
+            draft['grounding_flags'] = flags
         return draft
 
     if categorize:
@@ -454,18 +583,42 @@ def generate_summary_ollama(title: str, description: str, content: str,
             else:
                 summary_text = fallback_summary
 
-            return {'category': category, 'relevance': relevance, 'vc_signal': vc_signal, 'summary': summary_text}
+            summary_text, flags = _ground_summary(summary_text, text_to_summarize)
+            result = {'category': category, 'relevance': relevance,
+                      'vc_signal': vc_signal, 'summary': summary_text}
+            if flags:
+                result['grounding_flags'] = flags
+            return result
 
         except Exception:
             print(f"  WARNING: Could not parse categorize response, using defaults")
             return {'category': '其他', 'relevance': 3, 'vc_signal': 'other', 'summary': fallback_summary}
 
-    return {'summary': text}
+    text, flags = _ground_summary(text, text_to_summarize)
+    result = {'summary': text}
+    if flags:
+        result['grounding_flags'] = flags
+    return result
 
 
 def estimate_cost_gemini(num_articles: int) -> float:
     """Gemini is FREE up to 1500 requests/day"""
     return 0.0
+
+
+def estimate_cost_claude(num_articles: int) -> float:
+    """
+    Estimate Claude summarization cost.
+
+    Per article: a fetched article capped at ~8000 chars plus the prompt is
+    roughly 2500 input tokens; the Chinese summary plus low-effort thinking is
+    roughly 700 output tokens. Priced at Opus 5 list rates ($5 / $25 per MTok),
+    so this over-estimates on Sonnet or Haiku.
+    """
+    input_tokens = num_articles * 2500
+    output_tokens = num_articles * 700
+
+    return (input_tokens / 1_000_000) * 5.0 + (output_tokens / 1_000_000) * 25.0
 
 
 def estimate_cost_openai(num_articles: int) -> float:
@@ -493,7 +646,7 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
                       output_file: str = '.tmp/summarized_articles.json',
                       max_articles: int = None,
                       skip_fetch: bool = False,
-                      provider: str = 'ollama',
+                      provider: str = 'claude',
                       skip_confirm: bool = False,
                       language: str = 'en',
                       consumer: bool = False,
@@ -506,7 +659,7 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
         output_file: Path to output summarized articles JSON
         max_articles: Maximum number of articles to process (None = all)
         skip_fetch: Skip fetching full content, use existing description only
-        provider: 'ollama' (local, free, default), 'gemini', or 'openai'
+        provider: 'claude' (default), 'gemini', or 'openai'
         skip_confirm: Skip cost confirmation prompt
         language: Summary output language ('en' for English, 'zh' for Chinese)
         consumer: Consumer mode — classify articles into 行业动态/融资新闻 and generate
@@ -515,11 +668,15 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
     load_dotenv(override=True)
 
     # Check for API key based on provider
-    if provider == 'ollama':
-        from tools.utils import OLLAMA_HOST, OLLAMA_MODEL
-        api_key = None
+    if provider == 'claude':
+        from tools.utils import CLAUDE_MODEL, CLAUDE_EFFORT
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        if not api_key:
+            print("ERROR: ANTHROPIC_API_KEY not found in .env file")
+            print("Get your API key at: https://console.anthropic.com/settings/keys")
+            sys.exit(1)
         client = None
-        print(f"Using local Ollama ({OLLAMA_MODEL} @ {OLLAMA_HOST}) for summarization")
+        print(f"Using Claude ({CLAUDE_MODEL}, effort={CLAUDE_EFFORT}) for summarization")
     elif provider == 'gemini':
         api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
         if not api_key:
@@ -575,9 +732,9 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
     print(f"  Articles to process: {len(remaining)} (skipping {len(already_done)} already done)")
 
     # Estimate cost on remaining articles only
-    if provider == 'ollama':
-        estimated_cost = 0.0
-        print(f"\nEstimated cost: $0.00 (local Ollama)")
+    if provider == 'claude':
+        estimated_cost = estimate_cost_claude(len(remaining))
+        print(f"\nEstimated cost: ${estimated_cost:.2f}")
     elif provider == 'gemini':
         estimated_cost = estimate_cost_gemini(len(remaining))
         print(f"\nEstimated cost: $0.00 (FREE)")
@@ -590,7 +747,7 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
         print(f"\nEstimated cost: ${estimated_cost:.2f}")
 
     # Ask for confirmation if cost is high (paid providers)
-    if provider == 'openai' and estimated_cost > 2.0 and not skip_confirm:
+    if provider in ('openai', 'claude') and estimated_cost > 2.0 and not skip_confirm:
         response = input(f"\nSummarization will cost approximately ${estimated_cost:.2f}. Continue? (y/n): ")
         if response.lower() != 'y':
             print("Summarization cancelled")
@@ -601,6 +758,7 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
     summarized_articles = list(already_done.values())
 
     skipped_count = 0
+    flagged = []          # articles whose figures never traced back to the source
     for i, article in enumerate(remaining, 1):
         print(f"[{i}/{len(remaining)}] {article.get('title', 'Untitled')[:60]}...")
 
@@ -631,8 +789,8 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
                 time.sleep(0.5)  # Rate limiting
 
         # Generate summary
-        if provider == 'ollama':
-            result = generate_summary_ollama(
+        if provider == 'claude':
+            result = generate_summary_claude(
                 article.get('title', ''),
                 article.get('description', ''),
                 content,
@@ -675,6 +833,11 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
             article['vc_signal'] = result.get('vc_signal', 'other')
             print(f"  [{result.get('relevance', 3)}/5] {result['category']} [{result.get('vc_signal', 'other')}]")
         article['full_content_fetched'] = bool(content)
+        if result.get('grounding_flags'):
+            # Survived a repair attempt — keep it visible in the data so a
+            # reviewer can check this article before the report goes out.
+            article['grounding_flags'] = result['grounding_flags']
+            flagged.append((article.get('title', '')[:60], result['grounding_flags']))
         summarized_articles.append(article)
 
         # Save after every article so a crash doesn't lose progress
@@ -688,6 +851,16 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
         print(f"\n✓ Summarization complete ({len(summarized_articles)} articles, {skipped_count} X/Twitter links skipped)")
     else:
         print(f"\n✓ Summarization complete ({len(summarized_articles)} articles)")
+
+    # Grounding report. Silence here means every figure in every summary traced
+    # back to its source; anything listed needs a human to look before sending.
+    if flagged:
+        print(f"\n⚠ GROUNDING: {len(flagged)} article(s) contain figures not found in the source:")
+        for title, figures in flagged:
+            print(f"    {title}... → {', '.join(figures)}")
+        print("  These are marked with 'grounding_flags' in the output JSON.")
+    else:
+        print("\n✓ Grounding: every figure in every summary traces to its source")
 
     # Save output
     with open(output_file, 'w', encoding='utf-8') as f:
@@ -703,8 +876,8 @@ def main():
     parser.add_argument('--output', default='.tmp/summarized_articles.json', help='Output file')
     parser.add_argument('--max', type=int, default=None, help='Max articles to process')
     parser.add_argument('--skip-fetch', action='store_true', help='Skip fetching full content')
-    parser.add_argument('--provider', choices=['ollama', 'gemini', 'openai'], default='ollama',
-                       help='AI provider to use (default: ollama, local + free)')
+    parser.add_argument('--provider', choices=['claude', 'gemini', 'openai'], default='claude',
+                       help='AI provider to use (default: claude)')
     parser.add_argument('--yes', '-y', action='store_true', help='Skip cost confirmation prompt')
     parser.add_argument('--language', choices=['en', 'zh'], default='zh',
                         help='Summary output language: zh=Chinese (default), en=English')

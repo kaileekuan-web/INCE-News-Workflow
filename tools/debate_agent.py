@@ -19,9 +19,10 @@ import time
 import requests
 from dotenv import load_dotenv
 
-load_dotenv(override=True)
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.utils import call_claude, CLAUDE_MODEL
 
-CLAUDE_MODEL = "claude-sonnet-4-6"
+load_dotenv(override=True)
 
 BULL_PROMPT = """You are the Bull analyst at INCE, a VC firm focused on AI and deep tech. Your job is to make the strongest possible investment case.
 
@@ -51,27 +52,18 @@ Bear: {bear_case}
 Write 1-2 paragraphs with your final investment take. Synthesize both views honestly. End with ONE specific action item for INCE this week (e.g. "Source 3 seed-stage companies in X", "Pass — revisit in 6 months", "Add to watchlist and monitor Y metric")."""
 
 
-def _call_claude(prompt: str, api_key: str) -> str:
-    url = "https://api.anthropic.com/v1/messages"
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
-    payload = {
-        "model": CLAUDE_MODEL,
-        "max_tokens": 1024,
-        "messages": [{"role": "user", "content": prompt}],
-    }
-    for attempt in range(3):
-        try:
-            response = requests.post(url, json=payload, headers=headers, timeout=60)
-            response.raise_for_status()
-            return response.json()["content"][0]["text"].strip()
-        except Exception as e:
-            if attempt == 2:
-                raise
-            time.sleep(3 * (attempt + 1))
+def _call_agent(prompt: str, api_key: str = None) -> str:
+    """
+    One debate turn, run on Claude.
+
+    api_key is kept in the signature only so existing call sites keep working;
+    the Anthropic client reads ANTHROPIC_API_KEY from the environment. Retries
+    and timeouts live in call_claude.
+
+    Effort is 'medium': each turn is an argued position that has to engage with
+    the previous one, which is the kind of work low effort thins out.
+    """
+    return call_claude(prompt, max_tokens=4096, effort='medium')
 
 
 def debate_insight(insight: dict, api_key: str) -> dict:
@@ -83,20 +75,20 @@ def debate_insight(insight: dict, api_key: str) -> dict:
     )
 
     print("    Bull agent...")
-    bull = _call_claude(BULL_PROMPT.format(
+    bull = _call_agent(BULL_PROMPT.format(
         theme=theme, insight=insight_text,
         rationale=rationale, articles=articles_text or "(no articles cited)"
     ), api_key)
     time.sleep(0.5)
 
     print("    Bear agent...")
-    bear = _call_claude(BEAR_PROMPT.format(
+    bear = _call_agent(BEAR_PROMPT.format(
         theme=theme, insight=insight_text, bull_case=bull
     ), api_key)
     time.sleep(0.5)
 
     print("    Partner agent...")
-    partner = _call_claude(PARTNER_PROMPT.format(
+    partner = _call_agent(PARTNER_PROMPT.format(
         theme=theme, insight=insight_text, bull_case=bull, bear_case=bear
     ), api_key)
     time.sleep(0.5)
@@ -110,10 +102,8 @@ def main():
     parser.add_argument("--output", default=".tmp/debate_memos.json", help="Output path")
     args = parser.parse_args()
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        print("ERROR: ANTHROPIC_API_KEY not set")
-        sys.exit(1)
+    api_key = None  # key is read from the environment by the Anthropic client
+    print(f"Running debate on Claude ({CLAUDE_MODEL})")
 
     with open(args.input, encoding="utf-8") as f:
         insights = json.load(f)

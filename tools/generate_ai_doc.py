@@ -23,11 +23,11 @@ from io import BytesIO
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import format_date_for_display, call_ollama, translate_to_chinese_ollama
+from tools.utils import format_date_for_display, call_claude, translate_to_chinese_claude
 from tools.generate_word_doc import (
     add_hyperlink,
     add_formatted_text,
-    extract_funding_with_openai,
+    extract_funding_with_web_search,
     create_funding_table,
     convert_bullets_to_paragraph,
     set_run_font,
@@ -72,7 +72,7 @@ def is_fundraising_article(_article: dict) -> bool:
 
 
 def article_to_funding_event(article: dict) -> dict:
-    """Use the local Ollama model to extract structured funding info from a detected funding article."""
+    """Use Claude to extract structured funding info from a detected funding article."""
     title = article.get("title", "")
     # Prefer full article content over the condensed summary so founder details aren't lost
     body = article.get("content") or article.get("summary") or article.get("description", "")
@@ -89,10 +89,12 @@ def article_to_funding_event(article: dict) -> dict:
         f'"raise": 融资金额（例如："5000万美元"，未知填"不详"）\n'
         f'"valuation": 融资后估值（例如："5亿美元"，未知填"不详"）\n'
         f'"investors": 主要投资方（例如："领投：红杉资本"，未知填"不详"）\n\n'
+        f"【事实约束】只能使用上方文章中明确出现的信息。不得根据公司名补全你已知的背景、"
+        f"融资金额、估值、投资方或创始人经历；文章未写明的字段填\"不详\"，不要猜测。\n\n"
         f"仅返回有效JSON，不要包含其他文字。"
     )
 
-    text = call_ollama(prompt, temperature=0.1)
+    text = call_claude(prompt, max_tokens=2048)
     if text:
         try:
             text = re.sub(r"^```json\s*", "", text)
@@ -170,6 +172,23 @@ BIGTECH_KEYWORDS = [
 ]
 
 
+def is_mostly_chinese(text: str, threshold: float = 0.2) -> bool:
+    """
+    True if `text` already reads as Chinese.
+
+    When the pipeline runs with --language zh the summariser has already
+    produced Chinese prose, and translating it again is a wasted LLM call per
+    article — a third of the run's entire request budget, which matters on a
+    free tier with a daily cap. Titles stay English (they come from X and
+    TechCrunch), so they still get translated.
+    """
+    if not text:
+        return False
+    cjk = sum(1 for ch in text if '一' <= ch <= '鿿')
+    letters = sum(1 for ch in text if ch.isalpha() or '一' <= ch <= '鿿')
+    return letters > 0 and (cjk / letters) >= threshold
+
+
 def classify_article(article: dict) -> str:
     """Classify article into OpenAI | Anthropic | BigTech | Other by keyword match."""
     text = " " + " ".join([
@@ -229,6 +248,10 @@ def create_grouped_news_table(
     Groups: OpenAI → Anthropic → BigTech → Other
     Within each group, articles are sorted oldest first.
     """
+    # Counter for text that was already Chinese and needed no translation call.
+    # Boxed in a list so the nested loop below can mutate it.
+    skipped_translations = [0]
+
     # Classify and bucket
     groups = {g: [] for g in GROUP_ORDER}
     for article in articles:
@@ -289,12 +312,15 @@ def create_grouped_news_table(
             title = article.get("title", "无标题")
             # Translate title to Chinese when in chinese-only or translate mode
             if chinese_only or translate:
-                for attempt in range(3):
-                    t = translate_to_chinese_ollama(title)
-                    if t:
-                        title = t
-                        break
-                    time.sleep(4 * (attempt + 1))
+                if is_mostly_chinese(title):
+                    skipped_translations[0] += 1
+                else:
+                    for attempt in range(3):
+                        t = translate_to_chinese_claude(title)
+                        if t:
+                            title = t
+                            break
+                        time.sleep(4 * (attempt + 1))
             url = article.get("url", "")
             if url:
                 add_hyperlink(summary_para, url, title)
@@ -309,13 +335,21 @@ def create_grouped_news_table(
             set_run_font(summary_para.add_run("\n\n"), font_size=10)
 
             if chinese_only or translate:
-                chinese = None
-                for attempt in range(3):
-                    chinese = translate_to_chinese_ollama(summary_text)
-                    if chinese:
-                        break
-                    time.sleep(4 * (attempt + 1))
-                add_formatted_text(summary_para, chinese or summary_text, font_size=10)
+                # With --language zh the summariser already wrote Chinese prose.
+                # Re-translating it is one wasted inference per article — about a
+                # third of the run — and on a local model that is minutes, not
+                # cents. Titles still translate: they arrive in English.
+                if is_mostly_chinese(summary_text):
+                    skipped_translations[0] += 1
+                    add_formatted_text(summary_para, summary_text, font_size=10)
+                else:
+                    chinese = None
+                    for attempt in range(3):
+                        chinese = translate_to_chinese_claude(summary_text)
+                        if chinese:
+                            break
+                        time.sleep(4 * (attempt + 1))
+                    add_formatted_text(summary_para, chinese or summary_text, font_size=10)
             else:
                 add_formatted_text(summary_para, summary_text, font_size=10)
 
@@ -333,6 +367,9 @@ def create_grouped_news_table(
                     img_run.add_picture(BytesIO(img_resp.content), width=Inches(2.0))
                 except Exception:
                     pass
+
+    if skipped_translations[0]:
+        print(f"  Skipped {skipped_translations[0]} translation call(s) — text was already Chinese")
 
     return table
 
@@ -377,11 +414,11 @@ def generate_ai_doc(
             print(f"  Detected {len(funding_articles)} fundraising articles — moving to funding table")
 
     if translate:
-        print("Translation enabled (local Ollama)")
+        print("Translation enabled (Claude)")
     elif chinese_only:
-        print("Chinese mode enabled (local Ollama for title translation)")
+        print("Chinese mode enabled (Claude for title translation)")
 
-    openai_key = os.getenv("OPENAI_API_KEY")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY")
 
     print("Creating Word document...")
     doc = Document()
@@ -442,17 +479,17 @@ def generate_ai_doc(
                 print(f"  [{i}/{len(wechat_funding_articles)}] {a.get('title', '')[:70]}...")
                 wechat_funding.append(article_to_funding_event(a))
 
-        print("Searching for AI funding news with ChatGPT (day by day)...")
-        if openai_key:
-            funding_events = extract_funding_with_openai(openai_key, start_date, end_date)
+        print("Searching for AI funding news with Claude web search (day by day)...")
+        if anthropic_key:
+            funding_events = extract_funding_with_web_search(anthropic_key, start_date, end_date)
             all_funding = funding_events + wechat_funding
             print(f"  Found {len(funding_events)} from web search + {len(wechat_funding)} from WeChat")
             create_funding_table(doc, all_funding)
         elif wechat_funding:
-            print("  OPENAI_API_KEY not set — using WeChat fundraising articles only")
+            print("  ANTHROPIC_API_KEY not set — using WeChat fundraising articles only")
             create_funding_table(doc, wechat_funding)
         else:
-            print("  WARNING: OPENAI_API_KEY not set — skipping funding section")
+            print("  WARNING: ANTHROPIC_API_KEY not set — skipping funding section")
 
     os.makedirs(output_dir, exist_ok=True)
     filename = f"{output_prefix}_{start_date.replace('-','')}_{end_date.replace('-','')}.docx"

@@ -142,7 +142,7 @@ def generate_consumer_doc(start_date: str, end_date: str,
 
     if not os.path.exists(articles_file):
         print(f"ERROR: {articles_file} not found")
-        print("Run: python tools/summarize_articles.py --consumer --provider ollama --yes")
+        print("Run: python tools/summarize_articles.py --consumer --provider claude --yes")
         sys.exit(1)
 
     with open(articles_file, 'r', encoding='utf-8') as f:

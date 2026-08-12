@@ -402,7 +402,7 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
                 if _run_cmd(job_id, [
                     py, str(TOOLS_DIR / "summarize_articles.py"),
                     "--input", wc_funding_raw, "--output", wc_funding_summarized,
-                    "--provider", "ollama", "--yes",
+                    "--provider", "claude", "--yes",
                     "--language", "zh", "--skip-fetch",
                 ]) == -1: return
                 if os.path.exists(wc_funding_summarized):
@@ -433,13 +433,13 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
             )
 
         # Phase 5: Summarise
-        _log(job_id, "=== [5/6] Summarising with local Ollama ===")
+        _log(job_id, "=== [5/6] Summarising with Claude ===")
         summarized = str(tmp / "summarized_articles.json")
         lang_args = ["--language", "zh"] if language == "zh" else []
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
             "--input", classified, "--output", summarized,
-            "--provider", "ollama", "--yes",
+            "--provider", "claude", "--yes",
         ] + lang_args) == -1: return
 
         # Phase 6: Generate grouped Word doc
@@ -498,12 +498,12 @@ def _pipeline_deeptech(job_id, start_date, end_date, wechat_urls):
         ]) == -1: return
 
         # Phase 2: Summarise in Chinese
-        _log(job_id, "=== [2/4] Summarising with local Ollama ===")
+        _log(job_id, "=== [2/4] Summarising with Claude ===")
         summarized = str(tmp / "summarized_wechat.json")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
             "--input", wc_out, "--output", summarized,
-            "--provider", "ollama", "--yes",
+            "--provider", "claude", "--yes",
             "--language", "zh", "--skip-fetch",
         ]) == -1: return
 
@@ -579,12 +579,12 @@ def _pipeline_consumer(job_id, start_date, end_date, wechat_urls):
         if _is_stopped(job_id): return
 
         # Phase 3: Summarise (consumer mode)
-        _log(job_id, "=== [3/4] Summarising with local Ollama (consumer mode) ===")
+        _log(job_id, "=== [3/4] Summarising with Claude (consumer mode) ===")
         summarized = str(tmp / "summarized_wechat.json")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
             "--input", classified, "--output", summarized,
-            "--provider", "ollama", "--yes",
+            "--provider", "claude", "--yes",
             "--language", "zh", "--consumer",
         ]) == -1: return
 
@@ -649,7 +649,9 @@ def _pipeline_crypto(job_id, start_date, end_date, min_amount):
         ])
         if rc == -1: return
         if not summarized.exists():
-            raise RuntimeError("summarize_rootdata.py produced no output — check ANTHROPIC_API_KEY")
+            raise RuntimeError(
+                "summarize_rootdata.py produced no output — check ANTHROPIC_API_KEY."
+            )
 
         if _is_stopped(job_id): return
 
@@ -738,13 +740,13 @@ print(f'Deduped: {{len(unique)}} articles')
 """
         if _run_cmd(job_id, [py, "-c", dedup_script]) == -1: return
 
-        # Phase 4: Summarize (local Ollama — just pre-processing input for the
+        # Phase 4: Summarize (Claude — just pre-processing input for the
         # Claude-based insight/debate steps below, which are unchanged)
-        _log(job_id, "=== [4/7] Summarizing articles with local Ollama ===")
+        _log(job_id, "=== [4/7] Summarizing articles with Claude ===")
         summarized = tmp / "summarized_articles.json"
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
-            "--provider", "ollama",
+            "--provider", "claude",
             "--input", str(classified),
             "--output", str(summarized),
             "--yes",

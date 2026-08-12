@@ -2,20 +2,48 @@
 #
 # One entry per line. Blank lines and lines starting with '#' are ignored.
 #
-#   handle        -> pull that account's timeline (write it with or without a leading @)
-#   search: QUERY -> pull a Nitter tweet search for QUERY (used for trending / funding tweets)
+#   handle        -> pull that account's timeline (with or without a leading @)
+#   search: QUERY -> pull a Nitter tweet search for QUERY (trending / funding)
 #
-# NOTE: collection goes through Nitter RSS. Account timelines are the reliable
-# path; Nitter search is frequently disabled on public instances, so the
-# `search:` lines are best-effort and may return nothing on a given run.
+# SELECTIVITY — every post kept here becomes one LLM call downstream, so this
+# file is a cost control as much as a source list. A `#filter:` line sets the
+# level for every handle below it until the next one:
+#
+#   #filter: off     keep everything. For official lab/company accounts whose
+#                    feeds are already on-topic.
+#   #filter: on      must mention AI. For founders and researchers, who also
+#                    post personal takes, conference photos and jokes.
+#   #filter: strict  must mention AI AND read as news (launch / raise / acquire
+#                    / partnership / benchmark …), not commentary. For VCs, who
+#                    post a lot of opinion around a little signal.
+#
+# Regardless of level, these are always dropped: retweets, posts under 60
+# characters of real text, pure calls-to-action ("sign up", "link in bio"),
+# and near-duplicates of a post already collected this run.
+# Per-account volume is capped by --max-per-account (default 8).
+#
+# HOW COLLECTION WORKS: account timelines are read from public Nitter RSS
+# mirrors — fast, free, and the actual tweet text. When a mirror doesn't serve
+# an account (they rot and rate-limit constantly), `collect_x.py` falls back to
+# Claude web search for that account only, and those items are labelled
+# `X/Twitter (via Claude search)` in the report. Control with --fallback
+# auto|always|never.
+#
+# The `search:` lines below always go through Claude web search: public Nitter
+# instances disabled tweet search, so before that fallback existed these lines
+# silently returned nothing on every run. Results are uncurated and are always
+# filtered at `strict`.
+#
 # Edit this list freely — it is the single source of truth for who we follow.
 
 # ── AI labs & companies ─────────────────────────────────────────────
+# Product announcements straight from the source. Unfiltered.
+#filter: off
 OpenAI
 AnthropicAI
 GoogleDeepMind
 GoogleAI
-MetaAI
+AIatMeta
 MistralAI
 xai
 StabilityAI
@@ -25,6 +53,8 @@ midjourney
 runwayml
 
 # ── Founders & researchers ──────────────────────────────────────────
+# High signal when on-topic, noisy otherwise — require an AI mention.
+#filter: on
 sama
 gdb
 karpathy
@@ -38,6 +68,8 @@ drfeifei
 _jasonwei
 
 # ── VCs & investors (market/commentary signal) ──────────────────────
+# Mostly opinion. Keep only posts that report an actual event.
+#filter: strict
 saranormous
 martin_casado
 bgurley
