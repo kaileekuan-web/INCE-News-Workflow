@@ -39,6 +39,13 @@ TOOLS_DIR = BASE_DIR / "tools"
 OUTPUT_DIR = BASE_DIR / "output"
 TMP_DIR = BASE_DIR / ".tmp"
 
+# ince_auth sits next to this file. Running `python webapp/app.py` puts that
+# directory on sys.path automatically; running `gunicorn webapp.app:app` (what
+# the container does) does not, and the import died with ModuleNotFoundError
+# after the worker had already forked — so the image built, the replica never
+# booted, and the only symptom was a failed healthcheck. Add the directory
+# explicitly so both entry points resolve it.
+sys.path.insert(0, str(Path(__file__).parent))
 from ince_auth import install_auth
 
 app = Flask(__name__)
