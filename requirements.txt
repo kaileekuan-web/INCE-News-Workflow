@@ -26,7 +26,6 @@ python-dotenv>=1.0.0
 
 # AI/LLM APIs
 anthropic>=0.116.0                 # Claude — every inference in the pipeline
-openai>=1.12.0                     # legacy: translate_content.py + --provider openai
 
 # News collection
 newsapi-python>=0.2.7              # NewsAPI.org client

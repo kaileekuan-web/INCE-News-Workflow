@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """
-Translate article descriptions to Chinese using OpenAI GPT
+Translate article descriptions to Simplified Chinese with Claude.
 
-Strategy:
-- Batch translate to minimize API calls
-- Use GPT-4o-mini for cost efficiency
-- Low temperature for consistency
-- Estimate cost before running
+Standalone utility — no pipeline calls this (see HANDOFF.md). The report
+pipelines summarize straight into Chinese via summarize_articles.py --language
+zh, which is one call per article instead of summarize-then-translate. Kept for
+one-off backfills: translating a batch of articles that were collected in
+English after the fact.
+
+Translation itself is delegated to translate_to_chinese_claude() in
+tools/utils.py — the same function the rest of the pipeline uses, so its
+proper-noun rules (ByteDance must not come back as "BiteDance") apply here too
+rather than being reimplemented with a second prompt that would drift.
 
 Input: .tmp/classified_articles.json
 Output: .tmp/translated_articles.json (with chinese_description field added)
@@ -17,111 +22,60 @@ import sys
 import json
 import argparse
 from typing import List
+
 from dotenv import load_dotenv
 
-try:
-    from openai import OpenAI
-except ImportError:
-    print("ERROR: openai package not installed. Run: pip install openai")
-    sys.exit(1)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.utils import translate_to_chinese_claude
 
 
 def estimate_cost(descriptions: List[str]) -> float:
     """
-    Estimate translation cost
+    Rough cost estimate for the translation run, used only to gate the
+    confirmation prompt below.
 
-    Args:
-        descriptions: List of English descriptions
-
-    Returns:
-        Estimated cost in USD
+    Assumes Opus 5 list rates ($5 / $25 per MTok) and ~4 characters per token,
+    with the Chinese output about the same token count as the English input
+    plus low-effort thinking headroom. Over-estimates on Sonnet or Haiku, and
+    it is an estimate — the real invoice is whatever the API bills.
     """
-    # Rough estimate: 4 characters per token
     total_chars = sum(len(d) for d in descriptions)
-    estimated_input_tokens = total_chars // 4
+    input_tokens = total_chars // 4
+    output_tokens = input_tokens
 
-    # Output is roughly same length in Chinese
-    estimated_output_tokens = estimated_input_tokens
-
-    # GPT-4o-mini pricing (as of 2026)
-    # Input: $0.15 / 1M tokens
-    # Output: $0.60 / 1M tokens
-    input_cost = (estimated_input_tokens / 1_000_000) * 0.15
-    output_cost = (estimated_output_tokens / 1_000_000) * 0.60
-
-    return input_cost + output_cost
+    return (input_tokens / 1_000_000) * 5.0 + (output_tokens / 1_000_000) * 25.0
 
 
-def translate_batch(client: OpenAI, texts: List[str], batch_size: int = 20) -> List[str]:
+def translate_batch(texts: List[str]) -> List[str]:
     """
-    Translate a batch of texts
+    Translate texts to Chinese, one call per text.
 
-    Args:
-        client: OpenAI client
-        texts: List of English texts
-        batch_size: Number of texts per API call
+    Deliberately not batched. The previous implementation packed 20 items into
+    one numbered prompt and split the reply on newlines — when the model
+    returned a different number of lines than it was given (a translation
+    wrapping onto two lines was enough), every translation after that point
+    silently shifted onto the wrong article. One call per text costs more but
+    cannot misalign, and this is an occasional backfill tool, not a hot path.
 
-    Returns:
-        List of Chinese translations
+    Returns a list the same length as `texts`; a failed or empty translation
+    is '' so the caller can tell it apart from a real result.
     """
     translations = []
 
-    total_batches = (len(texts) + batch_size - 1) // batch_size
+    for i, text in enumerate(texts, 1):
+        if not text:
+            translations.append('')
+            continue
 
-    for batch_num, i in enumerate(range(0, len(texts), batch_size), 1):
-        batch = texts[i:i+batch_size]
-
-        print(f"Translating batch {batch_num}/{total_batches} ({len(batch)} items)...")
-
-        # Format prompt with numbered items
-        prompt = "Translate the following English news descriptions to Chinese (Simplified). Return only the translations, numbered:\n\n"
-        for idx, text in enumerate(batch, 1):
-            prompt += f"{idx}. {text}\n\n"
-
+        print(f"Translating {i}/{len(texts)}...")
         try:
-            # Call GPT
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",  # Cheaper model sufficient for translation
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are a professional translator specializing in technology news. Translate accurately and naturally to Simplified Chinese. Preserve technical terms in English where appropriate."
-                    },
-                    {
-                        "role": "user",
-                        "content": prompt
-                    }
-                ],
-                temperature=0.3  # Low temp for consistency
-            )
-
-            # Parse response
-            translated_text = response.choices[0].message.content.strip()
-
-            # Split by lines and remove numbering
-            translated_batch = []
-            for line in translated_text.split('\n'):
-                line = line.strip()
-                if not line:
-                    continue
-                # Remove numbering (e.g., "1. " or "1) ")
-                line = re.sub(r'^\d+[\.\)]\s*', '', line)
-                if line:
-                    translated_batch.append(line)
-
-            # Handle case where GPT didn't number the output
-            if len(translated_batch) != len(batch):
-                print(f"WARNING: Expected {len(batch)} translations, got {len(translated_batch)}")
-                # Pad with empty strings if needed
-                while len(translated_batch) < len(batch):
-                    translated_batch.append("")
-
-            translations.extend(translated_batch[:len(batch)])
-
+            translations.append(translate_to_chinese_claude(text))
         except Exception as e:
-            print(f"ERROR: Translation failed for batch {batch_num}: {e}")
-            # Add empty translations for failed batch
-            translations.extend([''] * len(batch))
+            # call_claude already swallows API-level failures and returns '';
+            # this catches anything unexpected so one bad article can't abort
+            # a long backfill after most of it has succeeded.
+            print(f"  WARNING: Translation failed for item {i}: {e}")
+            translations.append('')
 
     return translations
 
@@ -137,15 +91,10 @@ def translate_articles(input_file: str = '.tmp/classified_articles.json',
     """
     load_dotenv(override=True)
 
-    # Check for API key
-    api_key = os.getenv('OPENAI_API_KEY')
-    if not api_key:
-        print("ERROR: OPENAI_API_KEY not found in .env file")
-        print("Get your API key at: https://platform.openai.com/api-keys")
+    if not os.getenv('ANTHROPIC_API_KEY'):
+        print("ERROR: ANTHROPIC_API_KEY not found in .env file")
+        print("Get your API key at: https://console.anthropic.com/settings/keys")
         sys.exit(1)
-
-    # Initialize OpenAI client
-    client = OpenAI(api_key=api_key)
 
     # Load classified articles
     print(f"Loading articles from {input_file}...")
@@ -174,9 +123,12 @@ def translate_articles(input_file: str = '.tmp/classified_articles.json',
 
     # Translate
     print("\nStarting translation...")
-    translations = translate_batch(client, descriptions)
+    translations = translate_batch(descriptions)
 
+    failed = sum(1 for t, d in zip(translations, descriptions) if d and not t)
     print(f"\n✓ Translation complete ({len(translations)} items)")
+    if failed:
+        print(f"  WARNING: {failed} item(s) came back empty and were left untranslated")
 
     # Add translations to articles
     for article, translation in zip(articles, translations):
@@ -187,10 +139,6 @@ def translate_articles(input_file: str = '.tmp/classified_articles.json',
         json.dump(articles, f, ensure_ascii=False, indent=2)
 
     print(f"✓ Saved to {output_file}")
-
-
-# Import re for regex operations
-import re
 
 
 def main():

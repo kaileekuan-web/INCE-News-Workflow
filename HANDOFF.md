@@ -64,7 +64,6 @@ User clicks "Download" → gets the file
 
 **AI models used:**
 - **Claude** (`claude-opus-5`) — everything: article summarization, relevance scoring, Chinese translation, funding extraction, executive summaries, insights, and the fundraising web search (via Claude's server-side `web_search` tool). Override the model for a whole run with `NEWS_CLAUDE_MODEL` in `.env` (e.g. `claude-sonnet-5` to cut cost).
-- **Google Gemini** — optional free alternative for summarization only (1500 req/day limit, `--provider gemini`)
 
 ---
 
@@ -112,7 +111,7 @@ Each tool is a standalone Python script that does one thing well.
 
 | Script | What It Does |
 |--------|-------------|
-| `summarize_articles.py` | Fetches full article content, generates AI summaries. `--provider claude` (default) / `gemini` / `openai`, `--language zh` for Chinese output. Summary length scales to source length and every figure is checked against the source. |
+| `summarize_articles.py` | Fetches full article content, generates AI summaries with Claude. `--language zh` for Chinese output. Summary length scales to source length and every figure is checked against the source. |
 | `grounding.py` | Arithmetic grounding check — normalizes figures on both sides (so `$50 million` matches `5000万美元`) and reports any number in a summary the source doesn't support. Run `python tools/grounding.py` for its self-tests. |
 | `summarize_rootdata.py` | Generates bilingual company descriptions for crypto deals using Claude. |
 
@@ -131,7 +130,7 @@ Each tool is a standalone Python script that does one thing well.
 |--------|-------------|
 | `utils.py` | Shared functions: date validation, text cleaning, deduplication |
 | `detect_funding.py` | Keyword-based funding event classifier (not used in current main workflows) |
-| `translate_content.py` | Legacy OpenAI-based translation utility, not used by any pipeline (superseded by `translate_to_chinese_claude` in `tools/utils.py`) |
+| `translate_content.py` | Standalone Claude translation utility for one-off backfills, not used by any pipeline (the pipelines summarize straight into Chinese instead). Delegates to `translate_to_chinese_claude` in `tools/utils.py`. |
 
 ### `workflows/` — Step-by-Step SOPs
 
@@ -279,9 +278,7 @@ All API keys live in the `.env` file at the project root. **Never commit this fi
 |--------------------|---------|-----------|----------------|---------|
 | `ANTHROPIC_API_KEY` | Anthropic Claude | No | [console.anthropic.com](https://console.anthropic.com) → API Keys | **Required.** Every LLM call in every pipeline: summarization, scoring, translation, funding extraction, and the fundraising web search |
 | `NEWS_CLAUDE_MODEL` | — | — | optional `.env` override | Model for the whole pipeline (default `claude-opus-5`). Also `NEWS_CLAUDE_EFFORT` (default `low`) and `NEWS_CLAUDE_MAX_TOKENS` (default `4096`) |
-| `OPENAI_API_KEY` | OpenAI | No (requires credits) | [platform.openai.com/api-keys](https://platform.openai.com/api-keys) | Legacy only — `translate_content.py` and `--provider openai`. No pipeline needs it. |
 | `NEWSAPI_ORG_KEY` | NewsAPI.org | Yes (100 req/day) | [newsapi.org](https://newsapi.org) → Get API Key | TechCrunch article collection for AI News pipeline |
-| `GOOGLE_GEMINI_API_KEY` | Google AI Studio | Yes (1500 req/day) | [aistudio.google.com](https://aistudio.google.com) | Optional alternative summarizer — use `--provider gemini` |
 
 ### How to Update Keys Locally
 
@@ -310,7 +307,6 @@ These are approximate costs per report run:
 | Anthropic Claude | Summarization + translation + funding extraction | ~$0.03 per article at Opus 5 list rates |
 | Anthropic Claude | Fundraising web search | One multi-search turn per day in the range, plus $10 per 1,000 searches |
 | NewsAPI.org | Article fetching | Free (within 100 req/day) |
-| Google Gemini | Summarization (if used) | Free (within 1500 req/day) |
 
 Running AI News + Consumer News bi-weekly costs roughly **$3–8/month** in API fees. If costs spike, check that you're not running test runs with large date ranges unnecessarily.
 

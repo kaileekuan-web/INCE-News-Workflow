@@ -1,11 +1,7 @@
 #!/usr/bin/env python3
 """
-Fetch full article content and generate bullet point summaries using AI
-
-Supports:
-- Claude (Anthropic API) - default, claude-opus-5
-- Google Gemini (FREE - 1500 requests/day)
-- OpenAI GPT (Paid - requires payment method)
+Fetch full article content and generate bullet point summaries with Claude
+(Anthropic API, claude-opus-5 by default — see tools/utils.py).
 
 Strategy:
 1. Load articles from classified_articles.json
@@ -309,104 +305,6 @@ def get_summary_prompt(text: str, language: str = 'en', consumer: bool = False,
     return SUMMARY_PROMPT_EN.format(text=text)
 
 
-def generate_summary_gemini(api_key: str, title: str, description: str, content: str, language: str = 'en') -> str:
-    """
-    Generate bullet point summary using Google Gemini API
-
-    Args:
-        api_key: Google Gemini API key
-        title: Article title
-        description: Article description
-        content: Full article content
-        language: Output language ('en' or 'zh')
-
-    Returns:
-        Bullet point summary
-    """
-    # If content is empty, use title + description
-    if not content or len(content) < 100:
-        text_to_summarize = f"{title}\n\n{description}"
-    else:
-        text_to_summarize = f"{title}\n\n{description}\n\n{content}"
-
-    try:
-        # Use Gemini REST API
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
-
-        headers = {'Content-Type': 'application/json'}
-
-        payload = {
-            "contents": [{
-                "parts": [{
-                    "text": get_summary_prompt(text_to_summarize, language)
-                }]
-            }],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 1000  # Increased to account for thinking tokens
-            }
-        }
-
-        response = requests.post(url, json=payload, headers=headers, timeout=30)
-        response.raise_for_status()
-
-        result = response.json()
-
-        if 'candidates' in result and len(result['candidates']) > 0:
-            summary = result['candidates'][0]['content']['parts'][0]['text'].strip()
-            return summary
-        else:
-            print(f"  WARNING: Unexpected Gemini response format")
-            return description if description else title
-
-    except Exception as e:
-        print(f"  WARNING: Summarization failed: {e}")
-        # Fallback to description
-        return description if description else title
-
-
-def generate_summary_openai(client, title: str, description: str, content: str, language: str = 'en') -> str:
-    """
-    Generate bullet point summary using OpenAI
-
-    Args:
-        client: OpenAI client
-        title: Article title
-        description: Article description
-        content: Full article content
-        language: Output language ('en' or 'zh')
-
-    Returns:
-        Bullet point summary
-    """
-    # If content is empty, use title + description
-    if not content or len(content) < 100:
-        text_to_summarize = f"{title}\n\n{description}"
-    else:
-        text_to_summarize = f"{title}\n\n{description}\n\n{content}"
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "user",
-                    "content": get_summary_prompt(text_to_summarize, language)
-                }
-            ],
-            temperature=0.3,
-            max_tokens=500
-        )
-
-        summary = response.choices[0].message.content.strip()
-        return summary
-
-    except Exception as e:
-        print(f"  WARNING: Summarization failed: {e}")
-        # Fallback to description
-        return description if description else title
-
-
 def _parse_category_summary_json(text: str, fallback_summary: str) -> dict:
     """
     Shared regex-based parser for {"category": ..., "summary": ...} responses.
@@ -601,11 +499,6 @@ def generate_summary_claude(title: str, description: str, content: str,
     return result
 
 
-def estimate_cost_gemini(num_articles: int) -> float:
-    """Gemini is FREE up to 1500 requests/day"""
-    return 0.0
-
-
 def estimate_cost_claude(num_articles: int) -> float:
     """
     Estimate Claude summarization cost.
@@ -621,32 +514,12 @@ def estimate_cost_claude(num_articles: int) -> float:
     return (input_tokens / 1_000_000) * 5.0 + (output_tokens / 1_000_000) * 25.0
 
 
-def estimate_cost_openai(num_articles: int) -> float:
-    """
-    Estimate OpenAI translation cost
-
-    Args:
-        num_articles: Number of articles to summarize
-
-    Returns:
-        Estimated cost in USD
-    """
-    # Rough estimate: 2000 tokens input + 150 tokens output per article
-    input_tokens = num_articles * 2000
-    output_tokens = num_articles * 150
-
-    # GPT-4o-mini pricing
-    input_cost = (input_tokens / 1_000_000) * 0.15
-    output_cost = (output_tokens / 1_000_000) * 0.60
-
-    return input_cost + output_cost
 
 
 def summarize_articles(input_file: str = '.tmp/classified_articles.json',
                       output_file: str = '.tmp/summarized_articles.json',
                       max_articles: int = None,
                       skip_fetch: bool = False,
-                      provider: str = 'claude',
                       skip_confirm: bool = False,
                       language: str = 'en',
                       consumer: bool = False,
@@ -659,7 +532,6 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
         output_file: Path to output summarized articles JSON
         max_articles: Maximum number of articles to process (None = all)
         skip_fetch: Skip fetching full content, use existing description only
-        provider: 'claude' (default), 'gemini', or 'openai'
         skip_confirm: Skip cost confirmation prompt
         language: Summary output language ('en' for English, 'zh' for Chinese)
         consumer: Consumer mode — classify articles into 行业动态/融资新闻 and generate
@@ -667,38 +539,13 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
     """
     load_dotenv(override=True)
 
-    # Check for API key based on provider
-    if provider == 'claude':
-        from tools.utils import CLAUDE_MODEL, CLAUDE_EFFORT
-        api_key = os.getenv('ANTHROPIC_API_KEY')
-        if not api_key:
-            print("ERROR: ANTHROPIC_API_KEY not found in .env file")
-            print("Get your API key at: https://console.anthropic.com/settings/keys")
-            sys.exit(1)
-        client = None
-        print(f"Using Claude ({CLAUDE_MODEL}, effort={CLAUDE_EFFORT}) for summarization")
-    elif provider == 'gemini':
-        api_key = os.getenv('GOOGLE_GEMINI_API_KEY')
-        if not api_key:
-            print("ERROR: GOOGLE_GEMINI_API_KEY not found in .env file")
-            print("Get your FREE API key at: https://ai.google.dev/")
-            print("Then add it to your .env file:")
-            print("GOOGLE_GEMINI_API_KEY=your_key_here")
-            sys.exit(1)
-        client = None
-        print(f"Using Google Gemini (FREE) for summarization")
-    else:  # openai
-        api_key = os.getenv('OPENAI_API_KEY')
-        if not api_key:
-            print("ERROR: OPENAI_API_KEY not found in .env file")
-            sys.exit(1)
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=api_key)
-        except ImportError:
-            print("ERROR: openai package not installed. Run: pip install openai")
-            sys.exit(1)
-        print(f"Using OpenAI GPT-4o-mini for summarization")
+    from tools.utils import CLAUDE_MODEL, CLAUDE_EFFORT
+
+    if not os.getenv('ANTHROPIC_API_KEY'):
+        print("ERROR: ANTHROPIC_API_KEY not found in .env file")
+        print("Get your API key at: https://console.anthropic.com/settings/keys")
+        sys.exit(1)
+    print(f"Using Claude ({CLAUDE_MODEL}, effort={CLAUDE_EFFORT}) for summarization")
 
     # Load articles
     print(f"Loading articles from {input_file}...")
@@ -732,22 +579,10 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
     print(f"  Articles to process: {len(remaining)} (skipping {len(already_done)} already done)")
 
     # Estimate cost on remaining articles only
-    if provider == 'claude':
-        estimated_cost = estimate_cost_claude(len(remaining))
-        print(f"\nEstimated cost: ${estimated_cost:.2f}")
-    elif provider == 'gemini':
-        estimated_cost = estimate_cost_gemini(len(remaining))
-        print(f"\nEstimated cost: $0.00 (FREE)")
-        print(f"Rate limit: 15 requests/min, 1500/day")
-        if len(remaining) > 1500:
-            print(f"WARNING: {len(remaining)} articles exceeds daily limit of 1500")
-            sys.exit(1)
-    else:
-        estimated_cost = estimate_cost_openai(len(remaining))
-        print(f"\nEstimated cost: ${estimated_cost:.2f}")
+    estimated_cost = estimate_cost_claude(len(remaining))
+    print(f"\nEstimated cost: ${estimated_cost:.2f}")
 
-    # Ask for confirmation if cost is high (paid providers)
-    if provider in ('openai', 'claude') and estimated_cost > 2.0 and not skip_confirm:
+    if estimated_cost > 2.0 and not skip_confirm:
         response = input(f"\nSummarization will cost approximately ${estimated_cost:.2f}. Continue? (y/n): ")
         if response.lower() != 'y':
             print("Summarization cancelled")
@@ -789,38 +624,14 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
                 time.sleep(0.5)  # Rate limiting
 
         # Generate summary
-        if provider == 'claude':
-            result = generate_summary_claude(
-                article.get('title', ''),
-                article.get('description', ''),
-                content,
-                language,
-                consumer,
-                categorize,
-            )
-        elif provider == 'gemini':
-            result = {
-                'summary': generate_summary_gemini(
-                    api_key,
-                    article.get('title', ''),
-                    article.get('description', ''),
-                    content,
-                    language
-                )
-            }
-            # Respect Gemini rate limit: be conservative to avoid 429 errors
-            time.sleep(6)  # 6 seconds between requests = 10 req/min (safer)
-        else:
-            result = {
-                'summary': generate_summary_openai(
-                    client,
-                    article.get('title', ''),
-                    article.get('description', ''),
-                    content,
-                    language
-                )
-            }
-            time.sleep(0.3)  # Small delay for OpenAI
+        result = generate_summary_claude(
+            article.get('title', ''),
+            article.get('description', ''),
+            content,
+            language,
+            consumer,
+            categorize,
+        )
 
         # Add summary (and category/relevance if applicable) to article
         article['summary'] = result.get('summary', '')
@@ -876,8 +687,13 @@ def main():
     parser.add_argument('--output', default='.tmp/summarized_articles.json', help='Output file')
     parser.add_argument('--max', type=int, default=None, help='Max articles to process')
     parser.add_argument('--skip-fetch', action='store_true', help='Skip fetching full content')
-    parser.add_argument('--provider', choices=['claude', 'gemini', 'openai'], default='claude',
-                       help='AI provider to use (default: claude)')
+    # Claude is the only provider. The flag is kept because the webapp,
+    # send_report.py, and both workflow docs pass `--provider claude`
+    # explicitly; dropping it would break every one of those call sites for no
+    # gain. `--provider gemini|openai` now fails fast with an argparse error
+    # rather than silently routing to a model this pipeline no longer supports.
+    parser.add_argument('--provider', choices=['claude'], default='claude',
+                       help='AI provider (only claude is supported)')
     parser.add_argument('--yes', '-y', action='store_true', help='Skip cost confirmation prompt')
     parser.add_argument('--language', choices=['en', 'zh'], default='zh',
                         help='Summary output language: zh=Chinese (default), en=English')
@@ -890,7 +706,7 @@ def main():
     parser.set_defaults(categorize=True)
     args = parser.parse_args()
 
-    summarize_articles(args.input, args.output, args.max, args.skip_fetch, args.provider,
+    summarize_articles(args.input, args.output, args.max, args.skip_fetch,
                        args.yes, args.language, args.consumer, args.categorize)
 
 
