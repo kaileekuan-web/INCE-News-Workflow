@@ -1,11 +1,20 @@
 #!/usr/bin/env python3
 """
-Generate grouped AI News Word document.
+Generate the AI News Word document.
 
-Groups articles into: OpenAI | Anthropic | BigTech | Other
-BigTech = Google/DeepMind, Apple, Amazon/AWS, Meta, Microsoft, Netflix, xAI/Grok, NVIDIA
+The news table covers SMALLER AI STARTUPS. Stories about frontier labs and big
+tech (OpenAI, Anthropic, Google/DeepMind, Meta, Microsoft, Amazon, Apple, xAI,
+NVIDIA …) are dropped, as are opinion pieces, duplicates, and any link back to
+x.com — see tools/news_filters.py for all four rules and `--include-frontier` /
+`--include-opinion` to relax the first two.
 
-Output: one table with group header rows, followed by a fundraising table.
+The table renders flat, oldest first. The old OpenAI | Anthropic | BigTech |
+Other grouping only makes sense when frontier coverage is present, so it comes
+back with --include-frontier and is otherwise off — its classifier matches a
+keyword anywhere in the text, which would bucket a Cohere post under "OpenAI"
+for mentioning GPT.
+
+Output: one news table, followed by a fundraising table.
 Usage:
   python tools/generate_ai_doc.py --start_date 2026-03-31 --end_date 2026-04-09 \\
     --articles .tmp/summarized_articles.json [--chinese-only | --translate] \\
@@ -18,12 +27,12 @@ import json
 import re
 import argparse
 import time
-from datetime import datetime
 from io import BytesIO
 from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.utils import format_date_for_display, call_claude, translate_to_chinese_claude
+from tools.news_filters import curate, news_link
 from tools.generate_word_doc import (
     add_hyperlink,
     add_formatted_text,
@@ -32,8 +41,8 @@ from tools.generate_word_doc import (
     convert_bullets_to_paragraph,
     set_run_font,
     _set_para_font,
-    generate_executive_summary,
-    add_executive_summary_section,
+    pretranslate,
+    translate_cached,
     FONT_ENGLISH,
     FONT_CHINESE,
 )
@@ -57,6 +66,8 @@ except ImportError:
 
 # ── Fundraising detection ──────────────────────────────────────────────────────
 
+
+#tighten summarization
 FUNDRAISING_KEYWORDS = [
     "raises", "raised", "raise", "funding", "fundrais",
     "series a", "series b", "series c", "series d", "series e",
@@ -241,21 +252,47 @@ def create_grouped_news_table(
     articles: list,
     chinese_only: bool = False,
     translate: bool = False,
+    group: bool = False,
 ):
     """
-    Build the grouped AI News table.
+    Build the AI News table.
 
-    Groups: OpenAI → Anthropic → BigTech → Other
-    Within each group, articles are sorted oldest first.
+    `group=True` buckets articles OpenAI → Anthropic → BigTech → Other, which
+    is only meaningful when frontier-lab coverage is in the report
+    (--include-frontier). With the default scope those buckets are actively
+    wrong: classify_article() matches a keyword anywhere in the text, so a
+    Cohere post that mentions GPT lands under "OpenAI" — the passing mentions
+    the curation step deliberately kept are exactly what it trips on. So the
+    default is one flat table, oldest first.
     """
     # Counter for text that was already Chinese and needed no translation call.
     # Boxed in a list so the nested loop below can mutate it.
     skipped_translations = [0]
 
+    # Translate everything up front, concurrently. This loop makes two calls per
+    # article (title and summary); done inline they were two sequential network
+    # round-trips per row, which on a 40-article report is most of the document
+    # generation time. is_mostly_chinese() text is skipped exactly as before —
+    # it is already Chinese and re-translating it is a wasted call.
+    if chinese_only or translate:
+        pending = []
+        for article in articles:
+            title = article.get("title", "无标题")
+            if not is_mostly_chinese(title):
+                pending.append(title)
+            summary = convert_bullets_to_paragraph(
+                article.get("summary", article.get("description", "暂无摘要")))
+            if not is_mostly_chinese(summary):
+                pending.append(summary)
+        pretranslate(pending)
+
     # Classify and bucket
     groups = {g: [] for g in GROUP_ORDER}
-    for article in articles:
-        groups[classify_article(article)].append(article)
+    if group:
+        for article in articles:
+            groups[classify_article(article)].append(article)
+    else:
+        groups["Other"] = list(articles)
 
     # Sort within each group by date
     for g in GROUP_ORDER:
@@ -284,20 +321,20 @@ def create_grouped_news_table(
                 run.bold = True
                 set_run_font(run, font_size=12)
 
-    # Populate groups
+    # A single "其他" header over the whole table is noise, so headers only
+    # appear when there is more than one group to tell apart.
+    show_group_headers = sum(1 for g in GROUP_ORDER if groups[g]) > 1
     article_counter = 0
     for group in GROUP_ORDER:
         group_articles = groups[group]
         if not group_articles:
             continue
 
-        _add_group_header_row(table, GROUP_DISPLAY[group], GROUP_COLORS[group])
+        if show_group_headers:
+            _add_group_header_row(table, GROUP_DISPLAY[group], GROUP_COLORS[group])
 
         for article in group_articles:
             article_counter += 1
-            if translate:
-                print(f"  [{article_counter}/{total}] Translating ({group})...")
-
             row_cells = table.add_row().cells
 
             # Col 0: date
@@ -315,13 +352,11 @@ def create_grouped_news_table(
                 if is_mostly_chinese(title):
                     skipped_translations[0] += 1
                 else:
-                    for attempt in range(3):
-                        t = translate_to_chinese_claude(title)
-                        if t:
-                            title = t
-                            break
-                        time.sleep(4 * (attempt + 1))
-            url = article.get("url", "")
+                    title = translate_cached(title)
+            # Link to the news the post pointed at, never to the post. A story
+            # collected from a tweet that linked nowhere gets a bold headline
+            # and no link — an x.com link is not a source.
+            url = news_link(article)
             if url:
                 add_hyperlink(summary_para, url, title)
             else:
@@ -329,7 +364,10 @@ def create_grouped_news_table(
                 run.bold = True
                 set_run_font(run, font_size=10)
 
-            raw_summary = article.get("summary", article.get("description", "暂无摘要"))
+            # `or`, not a .get default — a failed summarization leaves an empty
+            # string behind, and that would render as a blank cell.
+            raw_summary = (article.get("summary") or article.get("description")
+                           or article.get("title") or "暂无摘要")
             summary_text = convert_bullets_to_paragraph(raw_summary)
 
             set_run_font(summary_para.add_run("\n\n"), font_size=10)
@@ -343,13 +381,8 @@ def create_grouped_news_table(
                     skipped_translations[0] += 1
                     add_formatted_text(summary_para, summary_text, font_size=10)
                 else:
-                    chinese = None
-                    for attempt in range(3):
-                        chinese = translate_to_chinese_claude(summary_text)
-                        if chinese:
-                            break
-                        time.sleep(4 * (attempt + 1))
-                    add_formatted_text(summary_para, chinese or summary_text, font_size=10)
+                    add_formatted_text(summary_para, translate_cached(summary_text),
+                                       font_size=10)
             else:
                 add_formatted_text(summary_para, summary_text, font_size=10)
 
@@ -387,6 +420,9 @@ def generate_ai_doc(
     output_prefix: str = "AI_News",
     no_funding: bool = False,
     funding_wechat_file: str = None,
+    include_frontier: bool = False,
+    include_opinion: bool = False,
+    require_source: bool = True,
 ):
     load_dotenv(override=True)
 
@@ -398,10 +434,16 @@ def generate_ai_doc(
     with open(articles_file, "r", encoding="utf-8") as f:
         articles = json.load(f)
 
+    print(f"Loaded {len(articles)} articles")
+
+    # Curate before --max, so a cap of 20 means 20 usable articles rather than
+    # 20 candidates that filtering then cuts to six.
+    print("Curating (startups only, news only, no duplicates)...")
+    articles = curate(articles, include_frontier, include_opinion,
+                      require_source=require_source)
+
     if max_articles:
         articles = articles[:max_articles]
-
-    print(f"Loaded {len(articles)} articles")
 
     # Separate fundraising articles from regular news (unless disabled)
     if no_funding:
@@ -453,20 +495,15 @@ def generate_ai_doc(
         set_run_font(run, font_size=14)
         run.font.color.rgb = RGBColor(128, 128, 128)
 
-    doc.add_paragraph(f"生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M')}")
     total_str = str(len(regular_articles))
     if not no_funding and funding_articles:
         total_str += f"（另有 {len(funding_articles)} 篇移至融资动态）"
     doc.add_paragraph(f"文章总数：{total_str}")
     doc.add_paragraph("")
 
-    print("Generating executive summary...")
-    exec_summary = generate_executive_summary(regular_articles)
-    if exec_summary:
-        add_executive_summary_section(doc, exec_summary)
-
-    print("Creating grouped news table...")
-    create_grouped_news_table(doc, regular_articles, chinese_only, translate)
+    print("Creating news table...")
+    create_grouped_news_table(doc, regular_articles, chinese_only, translate,
+                              group=include_frontier)
 
     if not no_funding:
         # Load WeChat fundraising articles if provided
@@ -512,6 +549,18 @@ def main():
     parser.add_argument("--no-funding", action="store_true", help="Skip funding detection and funding table")
     parser.add_argument("--output-prefix", default="AI_News")
     parser.add_argument("--funding-wechat", default=None, help="Path to summarized WeChat fundraising articles JSON")
+    parser.add_argument("--include-frontier", action="store_true",
+                        help="Keep stories about frontier labs and big tech "
+                             "(frontier_labs.txt). Off by default: the news table "
+                             "is about smaller AI startups.")
+    parser.add_argument("--include-opinion", action="store_true",
+                        help="Keep commentary, opinion pieces and executive statements. "
+                             "Off by default: the news table is for reported events.")
+    parser.add_argument("--allow-unlinked", dest="require_source",
+                        action="store_false",
+                        help="Keep articles with no link to published coverage, as "
+                             "unlinked headlines. By default they are dropped — run "
+                             "tools/resolve_sources.py first to find their coverage.")
     args = parser.parse_args()
 
     generate_ai_doc(
@@ -525,6 +574,9 @@ def main():
         args.output_prefix,
         args.no_funding,
         args.funding_wechat,
+        args.include_frontier,
+        args.include_opinion,
+        args.require_source,
     )
 
 

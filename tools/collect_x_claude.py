@@ -32,6 +32,7 @@ from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.utils import clean_text, call_claude_search, validate_date_range
+from tools.news_filters import is_x_url
 
 SOURCE_LABEL = 'X/Twitter (via Claude search)'
 
@@ -83,20 +84,37 @@ POSTS_SCHEMA = {
 }
 
 
+# Appended to both prompts. These are the report's editorial rules, stated to
+# the model in the same words the deterministic filters enforce downstream —
+# an item the model doesn't return is a filter that never has to fire, and a
+# search turn spent on OpenAI coverage is a turn not spent on a startup.
+_SCOPE_RULES = """
+Scope — this report covers SMALLER AI STARTUPS:
+- EXCLUDE anything whose subject is a frontier lab or big tech company: OpenAI, Anthropic, Google/DeepMind, Meta, Microsoft, Amazon, Apple, xAI, NVIDIA, Mistral, DeepSeek, Alibaba/Qwen. A startup story that merely mentions one of them is fine — "raised to compete with OpenAI", "founded by ex-DeepMind researchers" — the test is who the story is ABOUT.
+- INCLUDE independent AI companies: funding rounds, product launches, acquisitions, notable customers, key hires, benchmark results.
+
+Reporting, not commentary:
+- Every item must be a specific event that happened, with a date and named parties.
+- EXCLUDE opinions, predictions, hot takes, threads about what an event means, "why X is the future", engagement-bait questions, and marketing calls to action. If the item's core is an argument rather than an event, leave it out.
+
+Links:
+- `url` must point at the coverage of the event — a news article, a company blog post, a press release. Do NOT return an x.com/twitter.com URL: those are unusable here. If the only source you can find is the X post itself, leave the item out."""
+
+
 def _accounts_prompt(handles: list, start_date: str, end_date: str, limit: int) -> str:
     handle_list = ', '.join(f"@{h}" for h in handles)
     return f"""Search the web for AI news that these X/Twitter accounts posted or announced between {start_date} and {end_date} (inclusive): {handle_list}
 
-These are AI labs, founders, researchers and investors. I want what they actually announced or reported in that window — model releases, product launches, funding, research results, notable company news.
+These are AI companies, founders, researchers and investors. I want what they actually announced or reported in that window — product launches, funding, acquisitions, research results, notable company news.
 
 Rules:
 - Only include items you found a real source for. Do not infer, summarize from memory, or fill gaps.
 - Only include items dated within {start_date} to {end_date}. If you cannot establish the date from a source, leave the item out.
 - One entry per distinct announcement. Do not report the same news twice under two handles.
-- Skip pure commentary, jokes, personal posts, and promotional calls to action.
 - `text` states what happened, in 1-3 sentences, using only facts present in the source.
-- `url` is the most direct source: the x.com post itself when a source gives it (set is_direct_post true), otherwise the article reporting it (false).
-- Return at most {limit} items. Fewer is correct if that is all you can verify — an empty list is a valid answer."""
+- Set is_direct_post false (the url is coverage, per the link rule below).
+- Return at most {limit} items. Fewer is correct if that is all you can verify — an empty list is a valid answer.
+{_SCOPE_RULES}"""
 
 
 def _query_prompt(query: str, start_date: str, end_date: str, limit: int) -> str:
@@ -108,8 +126,9 @@ Rules:
 - One entry per distinct event; no duplicates of the same news.
 - `handle` is the X handle of the company or person the news is about, without the @ (best effort — use the company's own account when you know it, otherwise an empty string).
 - `text` states what happened, in 1-3 sentences, using only facts present in the source.
-- `url` is the source article URL (set is_direct_post false unless it is literally an x.com post).
-- Return at most {limit} items. An empty list is a valid answer."""
+- Set is_direct_post false (the url is coverage, per the link rule below).
+- Return at most {limit} items. An empty list is a valid answer.
+{_SCOPE_RULES}"""
 
 
 def _to_article(post: dict, start_dt: datetime, end_dt: datetime) -> dict:
@@ -138,11 +157,20 @@ def _to_article(post: dict, start_dt: datetime, end_dt: datetime) -> dict:
     if len(title) > 140:
         title = title[:137] + '...'
 
+    # The URL a search returns is normally the coverage itself, which is exactly
+    # what the report should link to. When it is an x.com link anyway (the model
+    # ignored the instruction, or a source only cited the post), it is kept as
+    # provenance and the item goes into the report without a link rather than
+    # with a link to X.
+    is_x = is_x_url(url)
+
     return {
         'source': SOURCE_LABEL,
         'title': clean_text(title),
         'description': text,
         'url': url,
+        'source_url': '' if is_x else url,
+        'x_url': url if is_x else '',
         'published_at': dt.isoformat() + 'Z',
         'content': text,
         'author': f"@{handle}" if handle else '',

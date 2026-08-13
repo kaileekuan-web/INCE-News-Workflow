@@ -3,6 +3,19 @@
 ## Objective
 Collect AI-related news from X/Twitter (the only source), summarize and translate to Chinese using Claude, and output a formatted Word document with two sections: (1) AI News table and (2) AI Fundraising News table sourced from a live Claude web search.
 
+## Editorial rules (what belongs in the news table)
+These four rules are enforced in code (`tools/news_filters.py`), at collection and again at document generation. They define the report:
+
+1. **Smaller AI startups only.** Stories about frontier labs and big tech — the companies in `frontier_labs.txt`, which covers the frontier labs and the Mag 7 — are dropped. A startup story that *mentions* one is kept: "raised to compete with OpenAI" and "founded by ex-DeepMind researchers" are startup stories. The test is who the story is **about**.
+2. **Events only — not opinion, not statements.** Two distinct things are excluded here:
+   - *Opinion*: takes, predictions, threads about what an event means, engagement bait.
+   - *Statements*: an executive saying something rather than doing something — conference remarks, interviews, podcasts, town halls, "the CEO warns/expects/believes". These are real and sourced and still not events.
+   - The exception that keeps this from eating the report: an item that carries a **hard event** stays, even when it arrives as a quote. "Sierra's CEO said the company raised $350M" is a funding round being reported through a quote.
+3. **No duplicates.** Four kinds are caught: the same link (in any spelling — http/https, www/m/amp, tracking parameters), identical wording, two wordings that still overlap heavily, and the case word overlap can't see — the company's announcement and the press write-up of it, which share the story's *names and figures* while sharing few words. Dedup runs three times: at collection, again after source resolution (which can reveal that two posts point at one article), and once more at document generation. The richest copy survives.
+4. **Every entry links to a published article, never to X.** Most announcement tweets link nowhere, so `tools/resolve_sources.py` searches for the article covering the same event and **verifies it against the post** before accepting it. What still has no article after that is dropped from the news table (`--allow-unlinked` keeps it as an unlinked headline). The x.com URL is kept in the JSON as `x_url` for provenance only.
+
+Escape hatches: `--include-frontier`, `--include-opinion` and `--allow-unlinked` on the document generators (`collect_x.py` takes the first two). Rules 1 and 2 are also configurable without code: edit `frontier_labs.txt` to let a company back in.
+
 ## Required Inputs
 - **Start date** (YYYY-MM-DD)
 - **End date** (YYYY-MM-DD)
@@ -12,6 +25,10 @@ Collect AI-related news from X/Twitter (the only source), summarize and translat
   - `NEWS_CLAUDE_MODEL` — default `claude-opus-5`; set to `claude-sonnet-5` or `claude-haiku-4-5` to trade quality for cost on large runs
   - `NEWS_CLAUDE_EFFORT` — default `low` (thinking depth for the per-article calls); raise to `medium`/`high` if summaries read thin
   - `NEWS_CLAUDE_MAX_TOKENS` — default `4096`; the floor applied to every call's token budget
+  - `NEWS_MAX_WORKERS` — default `6`; how many API calls run at once. This is the main speed lever: summarization, the funding day-search, translation and source resolution all run through it. Set to `1` for the old strictly-sequential behaviour (slower, but the log reads in order — useful when debugging)
+  - `X_FETCH_TIMEOUT` — default `8` seconds per Nitter mirror request
+- **Editorial config** (repo root, editable, no code change needed):
+  - `frontier_labs.txt` — the companies excluded from the news table, one per line with their aliases, X handles and domains
 - **X/Twitter source** (the primary and only automated source):
   - `x_accounts.txt` - handles + search queries to follow (repo root, editable)
   - Account timelines come from free Nitter RSS mirrors (no key). When a mirror won't serve an account, that account falls back to Claude web search — so a Nitter outage degrades the report instead of emptying it
@@ -20,9 +37,13 @@ Collect AI-related news from X/Twitter (the only source), summarize and translat
 ## Tools Required
 1. `tools/collect_x.py` - X/Twitter posts via Nitter RSS, with a Claude web-search fallback (accounts + searches from `x_accounts.txt`)
 2. `tools/collect_x_claude.py` - the fallback itself; also runnable standalone to collect without Nitter at all
-3. `tools/summarize_articles.py` - Fetch full content and generate summaries via Claude
-4. `tools/generate_word_doc.py` - Word document generation with translation and funding section
-5. `tools/utils.py` - Shared utilities (imported by other tools; also hosts the `call_claude` / `translate_to_chinese_claude` / `get_claude_client` helpers)
+3. `tools/news_filters.py` - the four editorial rules above (frontier labs, opinion/statements, dedup, source links). Imported by every other tool here; run it directly (`python tools/news_filters.py`) for its self-tests
+4. `tools/dedup_articles.py` - merge collector output into one deduplicated file
+5. `tools/resolve_sources.py` - find and verify the published article behind a link-less post
+6. `tools/summarize_articles.py` - Fetch full content and generate summaries via Claude
+7. `tools/generate_word_doc.py` - Word document generation with translation and funding section
+8. `tools/generate_ai_doc.py` - the AI news doc the webapp builds (same rules, different layout)
+9. `tools/utils.py` - Shared utilities (imported by other tools; also hosts the `call_claude` / `translate_to_chinese_claude` / `get_claude_client` helpers)
 
 ## Steps
 
@@ -49,6 +70,8 @@ Collect AI-related news from X/Twitter (the only source), summarize and translat
    - **Two paths, Nitter first.** Account timelines come from free Nitter RSS (real tweet text, no key). Any account no instance serves is retried through Claude web search, and the `search:` topic queries always go through Claude — public Nitter instances disabled tweet search, so those lines used to return nothing on every run
    - Full tweet text is captured into `content`/`description` so the summarizer can score it without scraping x.com (which is blocked)
    - Retweets are skipped; posts are filtered to the date range
+   - **The editorial rules are applied here first**, because a post dropped at collection is an LLM call not spent on it. The run prints what went and why: `Filtered out: promo=…, opinion=…, frontier=…` plus a `Frontier/big-tech coverage dropped: OpenAI (45), Anthropic (29)…` line. Expect the frontier count to be large — on a two-week range it was 104 of 247 articles
+   - Each post carries `source_url`: the link the tweet pointed at, resolved through t.co. The run reports `Source links: N/M posts link to the news behind them` — the rest will appear in the report as unlinked headlines
    - **Read the health line.** Every run prints `Nitter health: N/M accounts served, X unserved, Y empty feed(s)` and names the unserved accounts, so a low yield is explainable instead of silent
    - Fallback items are labelled `X/Twitter (via Claude search)` and carry `via_claude_search: true`. They are **coverage of what an account announced, not the tweet itself** — x.com blocks automated readers, so the URL points at the source that verifies the claim
    - Expected: 50-150 posts per 2-week range. The step **exits non-zero on 0 posts**, which stops the pipeline at the real cause rather than producing an empty document three phases later
@@ -58,36 +81,47 @@ Collect AI-related news from X/Twitter (the only source), summarize and translat
    - `--fallback always` — chase every account Nitter produced nothing for, even on a healthy run. Widest coverage, highest cost
    - `--fallback never` — Nitter only, zero API spend in this step; accept that an outage means an empty report
    - `--min-posts N` (default 20) — the "degraded" threshold for `auto`. `--min-posts 0` means only unserved accounts trigger the fallback
+   - `--include-frontier` / `--include-opinion` — turn off editorial rules 1 and 2 for this run
 
 ### Phase 3: Deduplication
 
-4. **Deduplicate articles** (inline Python — no dedicated script):
-   ```python
-   import json
-
-   with open('.tmp/raw_x.json') as f: x_posts = json.load(f)
-
-   seen, unique = set(), []
-   for a in x_posts:
-       url = a.get('url', '')
-       if url and url not in seen:
-           seen.add(url)
-           unique.append(a)
-
-   with open('.tmp/classified_articles.json', 'w') as f:
-       json.dump(unique, f, ensure_ascii=False, indent=2)
+4. **Deduplicate articles:**
+   ```bash
+   python tools/dedup_articles.py --inputs .tmp/raw_x.json --output .tmp/classified_articles.json
    ```
    - Output: `.tmp/classified_articles.json`
+   - Four kinds of duplicate are collapsed and counted separately: `same-url` (tracking parameters, http/https, www/m/amp all normalized first), `same-text`, `near-text` (word overlap ≥ 0.55), and `same-story`. The copy with a real link — and, failing that, the longer one — survives
+   - **`same-story` is the one that matters most.** Measured on real posts, the company's announcement and the press write-up of the same launch share only 0.27 of their words — no overlap threshold can catch that without also merging unrelated posts, which sit in the same band. So it matches on the story's *markers* instead: multi-word names, proper nouns and normalized figures. Two shared markers are required, at least one of them a name or a figure, plus a low bar of word overlap. Abundant evidence (three markers) relaxes the overlap bar further, which is what catches two wordings of one funding round
+   - `collect_x.py` already ran this pass over its own output; running it again is what merges multiple collectors (X + WeChat) without letting the overlap through
+
+### Phase 3.5: Source Resolution
+
+5. **Find the news article behind each link-less post:**
+   ```bash
+   python tools/resolve_sources.py --input .tmp/classified_articles.json --yes
+   ```
+   - Input/output: `.tmp/classified_articles.json` (updated in place)
+   - **Why this exists**: most announcement tweets link nowhere — on a real run only 2 of 20 surviving posts carried a link. Without this step those items are unlinked headlines summarized from 200 characters of tweet
+   - Asks Claude, with web search, which published article reports the *same event* (not merely the same company), in batches of 4 posts per search call
+   - **Every proposed link is verified before it is accepted**: the page is fetched and scored against the post's own wording (`news_filters.corroborates`, default threshold 0.45). Below that it is discarded and the post stays unlinked. A search will confidently return an article about the right company and the wrong event, and a link that doesn't support the summary under it is worse than no link
+   - Accepted items get `source_url`, `source_title`, `source_publisher`, `source_verified` and `source_match_score`. x.com URLs are rejected outright even when the model returns one
+   - Knock-on benefit: Phase 4 then summarizes **the article** instead of the tweet, so entries carry the figures, investors and product detail the post omitted
+   - Cost: roughly $0.05 per batch (one search turn plus the verification fetch) — about $0.25-0.50 on a typical run. Prompts above $2 unless `--yes`
+   - Flags: `--max N` for a cheap trial run, `--threshold` to tune strictness, `--no-verify` to accept search results unchecked (not advised)
 
 ### Phase 4: Article Summarization
 
-5. **Summarize collected posts:**
+6. **Summarize collected posts:**
    ```bash
    python tools/summarize_articles.py --provider claude --yes
    ```
    - Input: `.tmp/classified_articles.json`
-   - Uses **Claude** (`claude-opus-5` by default, effort `low`) to generate concise paragraph summaries, category, relevance score, and VC signal type
-   - X posts already have full tweet text captured at collection time, so no fetch is needed — the tweet text is summarized/scored directly
+   - Uses **Claude** (`claude-opus-5` by default, effort `low`) to generate concise paragraph summaries, category, relevance score, VC signal type, and two fields the document generators filter on:
+     - `subject_type`: `frontier_lab` | `big_tech` | `startup` | `other` — who the story is **about**. This is the judgement the keyword filters at collection can't make ("startup raises to compete with OpenAI" is a startup story)
+     - `content_type`: `news` | `opinion` — whether it reports an event at all
+     - Both default to the permissive value when the model's output can't be parsed, so a formatting wobble never silently empties the report
+   - **When a post links to an article, that article is fetched and summarized**, not the tweet — the announcement has the figures, investors and product detail a 200-character post leaves out. If the page returns less than 400 characters (paywall, JS-only page), the captured post text is used instead and the run says so
+   - X posts with no link still have their full tweet text captured at collection time, so they are summarized/scored directly with no fetch
    - Output: `.tmp/summarized_articles.json`
    - **Accuracy controls**: summary length scales to source length; prompts forbid outside knowledge and unsourced figures; every figure is arithmetically checked against the source, with one targeted repair pass when a mismatch is found. Watch for the `⚠ GROUNDING` block at the end of the step — anything listed there is an article to eyeball before sending
    - Cost: roughly $0.03 per post at Opus 5 list rates — the script prints an estimate and asks for confirmation above $2 unless `--yes` is passed
@@ -95,12 +129,19 @@ Collect AI-related news from X/Twitter (the only source), summarize and translat
 
 ### Phase 5: Word Document Generation
 
-6. **Generate Word document with Chinese translation and funding section:**
+7. **Generate Word document with Chinese translation and funding section:**
    ```bash
    python tools/generate_word_doc.py --start_date 2026-07-06 --end_date 2026-07-20 \
      --articles .tmp/summarized_articles.json --translate
    ```
    - Input: `.tmp/summarized_articles.json`
+   - **Curation runs first and prints its work**, so the article count in the doc is explainable:
+     ```
+     Duplicates removed: 5 (same-text=4, near-text=1)
+     Out of scope: 205 article(s) — no event reported (92), OpenAI (45), Anthropic (29), …
+     News table: 37 article(s) about smaller AI startups
+     ```
+     It runs here as well as at collection because this is the last point where every article is in one place — hand-added items, WeChat articles and anything collected before these rules existed all pass through it, and only here are `subject_type` / `content_type` available
    - **Section 0 — Watchlist Highlights** (optional, appears if `watchlist.txt` has entries):
      - Lists any articles mentioning companies in `watchlist.txt`, sorted by relevance
      - Edit `watchlist.txt` (one company per line) to track investment targets
@@ -120,6 +161,8 @@ Collect AI-related news from X/Twitter (the only source), summarize and translat
    **Flags:**
    - `--min-signal N` — only include articles with relevance ≥ N (1=all, 3=curated, 4=high-signal only)
    - `--watchlist FILE` — path to watchlist file (default: `watchlist.txt`)
+   - `--include-frontier` — put frontier-lab and big-tech stories back in
+   - `--include-opinion` — put commentary back in
 
 ## Expected Outputs
 
@@ -129,9 +172,9 @@ Collect AI-related news from X/Twitter (the only source), summarize and translat
   - **AI Fundraising News** table: funding events extracted from collected posts + supplemented via Claude web search
 
 **Intermediate Files (in `.tmp/`):**
-- `raw_x.json` - X/Twitter posts collected via Nitter RSS (source `X/Twitter`)
+- `raw_x.json` - X/Twitter posts collected via Nitter RSS (source `X/Twitter`), each with `source_url` (the news behind the post) and `x_url` (provenance)
 - `classified_articles.json` - Deduplicated posts
-- `summarized_articles.json` - Posts with Claude-generated summaries
+- `summarized_articles.json` - Posts with Claude-generated summaries, plus `subject_type` and `content_type`
 
 ## Edge Cases & Error Handling
 
@@ -188,12 +231,14 @@ Collect AI-related news from X/Twitter (the only source), summarize and translat
 ## Success Metrics
 
 After each run, verify:
-1. **Coverage**: 50-150 posts collected (single-source Twitter/X; 0 is possible if Nitter is down — re-run)
-2. **Summary Quality**: Manually review 10 random summaries
+1. **Coverage**: 50-150 posts collected before filtering; expect a much smaller news table after it (roughly 15-40), since frontier-lab coverage and commentary are the bulk of a raw X timeline. 0 collected is possible if Nitter is down — re-run
+2. **Scope**: skim the news table for a frontier-lab story that got through, and for a startup story wrongly dropped (the `Out of scope` line names every company that was removed and why). Fix either by editing `frontier_labs.txt`
+3. **Summary Quality**: Manually review 10 random summaries
    - Target: Clear, concise, captures key points, no invented entities or figures
-3. **Runtime**: Collection is the fast part; summarization is one API call per post
-4. **Cost**: single-digit dollars per run — dominated by per-article summarization and the day-by-day funding web search
-5. **Data Quality**: No duplicate posts, retweets excluded
+4. **Links**: headlines link to articles, never to x.com. Unlinked headlines are expected — they are posts that linked nowhere
+5. **Runtime**: Collection is the fast part; summarization is one API call per post
+6. **Cost**: single-digit dollars per run — dominated by per-article summarization and the day-by-day funding web search. Filtering at collection cuts this substantially, since dropped posts are never summarized
+7. **Data Quality**: No duplicate posts, retweets excluded, no opinion pieces
 
 ## Troubleshooting
 
@@ -227,7 +272,52 @@ cat .tmp/summarized_articles.json | jq '.[0]'
 
 ## Lessons Learned
 
-### 2026-08-12 Update — factual accuracy (current)
+### 2026-08-13 Update — debug pass on the whole pipeline (current)
+- **The most valuable item type in the report was being silently dropped.** "Harvey raised a $300 million Series E led by Kleiner Perkins" was rejected as `not-ai`: the post says what happened, not what the company does, and the topic filter demands the word. Found by running `collect_x.py` end-to-end against a stubbed Nitter for the first time — the module had never actually been executed in a test. A post with a **hard event and a real figure** now survives the topic test, marked `topic_unverified`; the summarizer, which reads the whole article, answers "is this an AI company?" with a new `非AI` category, and curation drops those. A regex cannot know what Harvey does; a reader of the article can.
+- **The timing logging I added last round crashed three pipelines on success.** Deeptech, consumer and crypto never call `_phase()`, but the completion block read `jobs[job_id]["_phase_started"]` directly — a `KeyError` caught by the pipeline's `except`, reporting a failed run for a report that was finished and on disk. Now one defensive `_log_timings()` helper, and every pipeline's phases are timed rather than just two.
+- **Hand-picked articles are exempt from the editorial filters.** With `--curate` running before summarization, a WeChat URL pasted by hand could be dropped as a "statement" and never appear — silently discarding an explicit instruction. Anything from WeChat (or flagged `manual`) now bypasses the filters while still going through dedup.
+- **`--curate` requires a source link**, matching what the document generators do, so the two agree on what will be printed. Both pipelines that pass it run `resolve_sources.py` first.
+- Smaller ones from the same pass: the Anthropic client is created under a lock (six threads raced to build it on the first batch); ordinary calls get a 180s timeout instead of the client's 600s, which is sized for web-search turns and let one stuck article hold a worker for ten minutes; and a failed summarization now falls back to the description instead of rendering an empty cell.
+
+### 2026-08-13 Update — the run took an hour, and why
+- **Almost none of the hour was computation; it was waiting one request at a time.** A bi-weekly run makes ~150 Claude calls of 5-15s each plus one web search per day in the range, and every one of them was sequential. `tools/utils.parallel_map` now runs them `NEWS_MAX_WORKERS` (default 6) at a time, preserving input order — order matters because each result is written back into a list or a document position.
+- **Where the time actually went**, and what each fix is worth on a 14-day run:
+  - *Summarization* — 1 call per article, sequential: **10-25 min → 2-4 min**.
+  - *Funding search* — one web-search turn **per day in the range**, plus a 1s sleep between days: **7-15 min → ~1 min**. The days were always independent; the loop bought nothing but ordering, which `parallel_map` preserves anyway.
+  - *Translation* — 2 calls per article made **inside the document render loop**, with 4s/8s retry sleeps: **4-7 min → under 1 min**. Now translated up front in one concurrent batch, then read from a cache while the document is built (python-docx is not thread-safe, so the render itself stays sequential).
+  - *Nitter collection* — each dead mirror cost `2 user agents × 15s`. A timeout now stops trying that instance immediately (a different user agent cannot fix an unreachable host) and the timeout is 8s: **up to 96s → 16s per unserved account**.
+  - *Source resolution* — batches now run concurrently.
+- **Curate before summarizing** (`summarize_articles.py --curate`). The document generators drop frontier labs, opinion, statements, duplicates and unlinked items at the end — every one of those had already cost an LLM call and 5-15 seconds. The deterministic rules can run before summarization, and that is most of the volume. This is a cost saving as much as a speed one.
+- **Resume was quietly re-paying for finished work.** It keyed only on `url`, so any article without that exact field was re-summarized on every re-run. The key now falls back `url → source_url → title`.
+- **Every phase is timed now.** The webapp logs `⏱ [5/7] … took 43s` per phase and a total at the end, so the next slow run identifies its own culprit instead of needing this analysis again.
+
+### 2026-08-13 Update — duplicates that word overlap cannot see
+- **The duplicates that survive are the ones that don't share words.** On the real collected file, the same event written up by the company and by the press sat at **0.27** word overlap; unrelated posts sat at 0.30-0.33. There is no threshold that separates those, so lowering the existing one would have merged unrelated stories instead. The fix is a second, orthogonal signal: `story_markers()` — multi-word names, proper nouns, and figures normalized through `tools/grounding` so `$350M` and `350 million` are one marker.
+- **The rule was derived from the false positives, not invented.** First attempt (one shared name) merged an availability announcement with a quote-tweet reacting to it. Second attempt (two shared markers) also merged two different products launching on the same platform — "Runway" and "agent" are two markers and no evidence — and double-counted `Opus 4.8` as both a phrase and a bare word. What survives contact with the data: **≥2 shared markers, at least one a name or figure, plus word overlap ≥ 0.25** — with the overlap bar dropping to 0.12 when three markers are shared, because "Sierra raised $350 million led by Greenoaks" and "Sierra lands a $350M round… Greenoaks leading" share the company, investor and amount but only 0.167 of their words. All seven cases, true and false, are now self-tests.
+- **A generic-marker stoplist is not optional.** Without it, "Sierra raised $350M Series C led by Kleiner" and "Harvey raised $200M Series C led by Sequoia" share "Series C" plus funding boilerplate and read as one story — two different rounds, silently merged into one entry.
+- **Two bugs found by running it on real data.** The name-phrase regex ran across sentence boundaries, inventing the name "greenoaks. sierra" and costing "Sierra" its own marker. And `canonical_url` preserved the scheme, so `http://` and `https://` spellings of one article were two articles.
+- **A swallowed ImportError silently degraded dedup.** `story_markers` imported `tools.grounding` inside a `try/except: pass`; running the module directly puts `tools/` on `sys.path` rather than the repo root, so the import failed and **every figure marker silently disappeared**. The only symptom was one self-test passing under import and failing under direct execution. The import is now at module level, where breaking it is an error rather than a quiet loss of accuracy.
+- **Dedup now runs after source resolution too.** Resolution is what makes two link-less posts about one event both point at the same article; collapsing them there means the duplicate is never summarized, and an LLM call per duplicate is saved.
+
+### 2026-08-13 Update — statements, and finding the article behind a post
+- **A CEO saying something is not news.** `is_statement()` catches conference remarks, interviews, podcasts, town halls and executive predictions, and the summarizer's `content_type` gained a third value (`statement`) alongside `news` and `opinion`. The rule that keeps this from eating the report is the redemption clause: an item carrying a **hard event** stays even when it arrives as a quote, so "Sierra's CEO said the company raised $350M" is still a funding round. `HARD_EVENT_SIGNALS` is deliberately narrower than `NEWS_SIGNALS` — 'report' and 'research' appear in half of all commentary and would redeem everything.
+- **`tools/resolve_sources.py` closes the link gap, which was the biggest quality problem left.** Only 2 of 20 surviving posts on a real run carried a link, so the rest could only ever be unlinked headlines summarized from 200 characters. This step asks Claude with web search which published article covers the *same event*, in batches of 4.
+- **The verification is the tool.** A search will confidently return an article about the right company and the wrong event. Every proposed URL is fetched and scored against the post's own wording (`corroborates()`: the share of the post's distinctive words appearing in the article, threshold 0.45 — not Jaccard, because the article is 50× longer and symmetric overlap always looks small). Below threshold the link is discarded and the post stays unlinked. A link that doesn't support the summary under it is worse than no link. x.com URLs are rejected outright even when the model returns one despite being told not to.
+- **Resolution pays for itself twice.** Beyond the link, `summarize_articles.py` then fetches and summarizes *the article* rather than the tweet — so entries carry the figures, investors and product detail a post omits. That is most of what "more in-depth" costs.
+- **Unlinked items are now dropped by default** (`--allow-unlinked` to keep them). After a resolution pass, an item no publication covered is a tweet, not news. The drop is printed with a pointer to `resolve_sources.py`, so this can never look like articles vanishing for no reason.
+- **Tesla was the Mag 7 gap.** The list had six of seven; a Tesla/Optimus story would have sailed through.
+
+### 2026-08-13 Update — startups only, news only
+- **The report is now scoped to smaller AI startups.** `frontier_labs.txt` lists the excluded companies with their aliases, handles and domains; `tools/news_filters.py` enforces it at collection and at document generation. On a real two-week range this removed 104 of 247 articles — OpenAI (45), Anthropic (29), Google DeepMind (17), Mistral (8), Meta (7).
+- **"About" is not "mentions".** The first version dropped *"Reflection AI, founded by two former DeepMind researchers, launched…"* — a startup story, thrown out for naming a lab. The fix is a context guard: a lab name introduced by `former`, `ex-`, `founded by`, `backed by`, `to take on`, `powered by`, `vs` and about thirty other phrases is background, not the subject. The name also only counts in the first 70 characters; anything later is context by construction. Both cases are in the self-tests.
+- **Two boundary bugs, both found by running the filters on real data rather than fixtures.** The alias matcher compiled its word-boundary guard as `(?=X|)`, which always succeeds — so it was enforcing nothing, and the self-test that "proved" it worked passed for an unrelated reason. And the lab list only held AI-division names (`google ai`, `meta ai`), so "Google released Nano Banana 2 Lite" and "Meta is building…" walked straight through. Bare big-tech names are now listed, with a hyphen guard so `Google-backed startup raises $20M` stays in.
+- **Opinion is filtered in two passes, because one isn't enough.** Explicit markers ("my take", "unpopular opinion", "thoughts?") are caught deterministically at collection, at every filter level including `off` — a company account's take is still a take. The rest is a judgement call, so the summarizer now returns `content_type: news | opinion` alongside `subject_type`, and the document generators drop the opinions. A keyword pass alone left @packyM's World Cup posts in the report; the LLM pass is what removes them.
+- **Requiring the letters "AI" has one bad false negative**, and it is the most valuable item the report can carry: *"Sierra raised a $350M Series C led by Greenoaks"* never says AI. Items found by a Claude web search skip that test (`topic_assured`) because the query already fixed the topic; raw timeline posts still have to say it.
+- **Reports link to the news, never to x.com.** Every post now carries `source_url` — the link it pointed at, with t.co resolved — and `x_url` for provenance. Headlines link to `source_url`; a post that links nowhere gets an unlinked headline rather than a link back to X. This also improved summaries: when there is a link, the *article* is fetched and summarized instead of the tweet, with a fallback to the post text when the page returns under 400 characters.
+- **Dedup got the source link as a key.** Two accounts posting the same article are now provably the same story, so the pass collapses same-link, same-wording and same-story-different-wording, keeping the copy that has a link. The inline dedup snippets are gone; `tools/dedup_articles.py` and `news_filters.dedupe` are the one implementation.
+- **`x_accounts.txt` was retargeted.** The lab accounts are commented out — every post they make is now dropped, so fetching them spent rate-limit budget to collect nothing — and startup/funding press accounts plus six startup-specific `search:` lines replaced them. The search lines matter disproportionately: a web search returns the article, so those items arrive with a real link, while a plain tweet usually links nowhere.
+
+### 2026-08-12 Update — factual accuracy
 - **Summary length now scales to the source** (`_length_rule` in `summarize_articles.py`). The prompt used to demand 4-6 sentences from every article including a 200-character tweet, which is an instruction to invent four sentences of significance. Measured on 10 real short posts, summaries went from ~320 characters to ~130 — the old ones were *longer than their English sources*, i.e. the model was adding material. One old summary fabricated a competitor chip announcement, product codename included; the new summary on the same source contains only what the source says.
 - **Every summarization and extraction prompt carries explicit grounding rules** (`GROUNDING_RULES_ZH` / `_EN`): no outside knowledge, figures and names must match the source, write less when the source is thin, omit rather than hedge, and never write sentences about what the source failed to mention.
 - **Figures are checked arithmetically, not by asking the model** (`tools/grounding.py`, 10 self-tests — run `python tools/grounding.py`). Every number in a summary is normalized to a value and matched against the source, so `$50 million` → `5000万美元` is recognized as correct while an invented `6000万美元` is caught. Only money, percentages and large counts are checked; small counts and bare years are skipped because sources spell them as words.
@@ -310,21 +400,16 @@ cat .tmp/summarized_articles.json | jq '.[0]'
    # Phase 2: Collection
    python tools/collect_x.py --start_date $START_DATE --end_date $END_DATE
 
-   # Phase 3: Deduplication (inline)
-   python3 -c "
-   import json
-   x = json.load(open('.tmp/raw_x.json'))
-   seen, unique = set(), []
-   for a in x:
-       url = a.get('url', '')
-       if url and url not in seen:
-           seen.add(url); unique.append(a)
-   json.dump(unique, open('.tmp/classified_articles.json', 'w'), ensure_ascii=False, indent=2)
-   print(f'Deduped: {len(unique)} posts')
-   "
+   # Phase 3: Deduplication
+   python tools/dedup_articles.py --inputs .tmp/raw_x.json \
+     --output .tmp/classified_articles.json
 
-   # Phase 4: Summarization with Claude
-   python tools/summarize_articles.py --provider claude --yes
+   # Phase 3.5: Find + verify the article behind each link-less post
+   python tools/resolve_sources.py --input .tmp/classified_articles.json --yes
+
+   # Phase 4: Summarization with Claude (--curate skips paying for articles
+   # the report would drop anyway; NEWS_MAX_WORKERS controls parallelism)
+   python tools/summarize_articles.py --provider claude --yes --curate
 
    # Phase 5: Word doc with Chinese translation + funding section
    # Add --min-signal 3 to filter low-signal articles; edit watchlist.txt to track target companies

@@ -1,112 +1,85 @@
 #!/usr/bin/env python3
 """
-Deduplicate collected articles by exact URL and title similarity.
+Deduplicate collected articles before summarization.
 
-Replaces the inline Phase 3 deduplication in the workflow.
-Reads raw source files, removes duplicates, writes classified_articles.json.
+Every duplicate that survives this step costs an LLM call and then shows up
+twice in the report, so this runs on the raw collector output — one merged,
+deduplicated file for the summarizer to work through.
+
+The comparison itself lives in tools/news_filters.dedupe, which is also called
+after source resolution and again at document generation. Four ways the same
+news arrives twice, all handled: the same link (any spelling of it), the same
+wording, two wordings that still overlap heavily, and two write-ups that share
+the story's names and figures without overlapping much at all. The richest copy
+survives — see news_filters._richness.
 
 Usage:
-    python tools/dedup_articles.py
-    python tools/dedup_articles.py --threshold 0.5
+    python tools/dedup_articles.py                      # every raw_*.json in .tmp/
+    python tools/dedup_articles.py --inputs a.json b.json
+    python tools/dedup_articles.py --threshold 0.5      # looser near-text match
 """
 
 import json
-import re
 import argparse
 import os
+import sys
 
-STOP_WORDS = {
-    'the', 'a', 'an', 'and', 'or', 'but', 'in', 'on', 'at', 'to', 'for',
-    'of', 'with', 'by', 'from', 'is', 'are', 'was', 'were', 'be', 'been',
-    'has', 'have', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
-    'should', 'may', 'might', 'this', 'that', 'these', 'those', 'it', 'its',
-    'as', 'up', 'out', 'about', 'into', 'through', 'new', 'can', 'how',
-    'what', 'says', 'said', 'after', 'over', 'now', 'just', 'also',
-}
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from tools.news_filters import dedupe
 
-
-def title_words(title: str) -> set:
-    """Normalize a title into a set of significant words."""
-    title = title.lower()
-    title = re.sub(r'[^\w\s]', ' ', title)
-    return {w for w in title.split() if w not in STOP_WORDS and len(w) > 2}
-
-
-def jaccard(set1: set, set2: set) -> float:
-    if not set1 or not set2:
-        return 0.0
-    return len(set1 & set2) / len(set1 | set2)
-
-
-def dedup_articles(articles: list, threshold: float = 0.5) -> tuple:
-    """
-    Two-pass deduplication:
-      Pass 1 — exact URL match
-      Pass 2 — title word overlap (Jaccard >= threshold)
-
-    Returns (unique_articles, url_dupes_removed, title_dupes_removed).
-    """
-    # Pass 1: exact URL
-    seen_urls: set = set()
-    url_deduped = []
-    url_dupes = 0
-    for a in articles:
-        url = a.get('url', '').strip()
-        if url and url in seen_urls:
-            url_dupes += 1
-            continue
-        if url:
-            seen_urls.add(url)
-        url_deduped.append(a)
-
-    # Pass 2: title similarity
-    unique = []
-    unique_word_sets = []
-    title_dupes = 0
-    for a in url_deduped:
-        words = title_words(a.get('title', ''))
-        is_dupe = any(jaccard(words, existing) >= threshold for existing in unique_word_sets)
-        if is_dupe:
-            title_dupes += 1
-        else:
-            unique.append(a)
-            unique_word_sets.append(words)
-
-    return unique, url_dupes, title_dupes
+# Collector outputs, in the order they should be merged. Missing files are
+# skipped: which collectors ran depends on the workflow.
+DEFAULT_INPUTS = [
+    ('.tmp/raw_x.json', 'X/Twitter'),
+    ('.tmp/raw_tldr_ai.json', 'TLDR AI'),
+    ('.tmp/raw_tldr_main.json', 'TLDR Main'),
+    ('.tmp/raw_techcrunch.json', 'TechCrunch'),
+    ('.tmp/raw_wechat.json', 'WeChat'),
+]
 
 
 def main():
     parser = argparse.ArgumentParser(description='Deduplicate collected articles')
-    parser.add_argument('--threshold', type=float, default=0.5,
-                        help='Jaccard similarity threshold for title dedup (default: 0.5)')
-    parser.add_argument('--tldr-ai', default='.tmp/raw_tldr_ai.json')
-    parser.add_argument('--tldr-main', default='.tmp/raw_tldr_main.json')
-    parser.add_argument('--techcrunch', default='.tmp/raw_techcrunch.json')
+    parser.add_argument('--inputs', nargs='+', metavar='FILE',
+                        help='Article JSON files to merge (default: every known '
+                             'raw_*.json in .tmp/ that exists)')
+    parser.add_argument('--threshold', type=float, default=0.55,
+                        help='Word-overlap threshold for near-duplicate detection '
+                             '(default: 0.55; lower is more aggressive)')
     parser.add_argument('--output', default='.tmp/classified_articles.json')
     args = parser.parse_args()
 
+    sources = ([(p, os.path.basename(p)) for p in args.inputs] if args.inputs
+               else DEFAULT_INPUTS)
+
     all_articles = []
-    for path, label in [
-        (args.tldr_ai, 'TLDR AI'),
-        (args.tldr_main, 'TLDR Main'),
-        (args.techcrunch, 'TechCrunch'),
-    ]:
-        if os.path.exists(path):
-            with open(path) as f:
-                batch = json.load(f)
-            all_articles.extend(batch)
-            print(f"  Loaded {len(batch):>4} articles from {label}")
-        else:
-            print(f"  WARNING: {path} not found, skipping")
+    for path, label in sources:
+        if not os.path.exists(path):
+            if args.inputs:
+                print(f"  WARNING: {path} not found, skipping")
+            continue
+        with open(path, encoding='utf-8') as f:
+            batch = json.load(f)
+        all_articles.extend(batch)
+        print(f"  Loaded {len(batch):>4} articles from {label}")
+
+    if not all_articles:
+        print("ERROR: no input articles found — did a collector run?")
+        sys.exit(1)
 
     print(f"  Total before dedup: {len(all_articles)}")
 
-    unique, url_dupes, title_dupes = dedup_articles(all_articles, args.threshold)
+    unique, stats = dedupe(all_articles, threshold=args.threshold)
 
-    print(f"  Removed {url_dupes} exact URL duplicates")
-    print(f"  Removed {title_dupes} similar-title duplicates (threshold={args.threshold})")
+    for key, label in (('same-url', 'same link'),
+                       ('same-text', 'identical wording'),
+                       ('near-text', 'same story, different wording'),
+                       ('same-story', 'same names and figures')):
+        if stats[key]:
+            print(f"  Removed {stats[key]:>3} duplicate(s): {label}")
     print(f"  Unique articles: {len(unique)}")
 
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
         json.dump(unique, f, ensure_ascii=False, indent=2)
 

@@ -3,7 +3,8 @@
 INCE News Dashboard — Flask web app
 
 4 pages:
-  /ai_news   — X/Twitter (+ optional WeChat), grouped table (OpenAI/Anthropic/BigTech/Other)
+  /ai_news   — X/Twitter (+ optional WeChat), news about smaller AI startups
+               (frontier labs, big tech, opinion and statements are filtered out)
   /deeptech  — WeChat only, flat table + online funding search
   /consumer  — WeChat only, consumer format (行业动态 / 融资新闻)
   /crypto    — RootData fundraising scraper, Excel output
@@ -80,6 +81,48 @@ def _log(job_id: str, msg: str):
         jobs[job_id]["queue"].put(msg)
 
 
+def _phase(job_id: str, label: str):
+    """
+    Log a phase header, and how long the previous phase took.
+
+    A run that takes an hour is impossible to fix without knowing which phase
+    owns the hour — the log used to show only that the whole thing was slow.
+    """
+    import time as _time
+    now = _time.time()
+    started = jobs.get(job_id, {}).get("_phase_started")
+    if started:
+        prev = jobs[job_id].get("_phase_label", "previous phase")
+        _log(job_id, f"    ⏱  {prev} took {now - started:.0f}s")
+    if job_id in jobs:
+        jobs[job_id]["_phase_started"] = now
+        jobs[job_id]["_phase_label"] = label
+    _log(job_id, f"=== {label} ===")
+
+
+def _log_timings(job_id: str):
+    """
+    Close out the timing log: the final phase's duration, then the total.
+
+    Every lookup here is defensive on purpose. This runs on the success path,
+    after the output file exists — a KeyError raised here would be caught by the
+    pipeline's `except` and reported to the user as a failed run, for a report
+    that was actually sitting on disk, finished. An earlier version read
+    `jobs[job_id]["_phase_started"]` directly and did exactly that in the three
+    pipelines that don't call _phase().
+    """
+    import time as _time
+    job = jobs.get(job_id)
+    if not job:
+        return
+    now = _time.time()
+    started = job.get("_phase_started")
+    if started:
+        _log(job_id, f"    ⏱  {job.get('_phase_label', 'last phase')} took {now - started:.0f}s")
+    if job.get("_started"):
+        _log(job_id, f"⏱  Total run time: {(now - job['_started']) / 60:.1f} min")
+
+
 def _is_stopped(job_id: str) -> bool:
     return jobs[job_id]["stop_event"].is_set()
 
@@ -151,9 +194,11 @@ def _find_output(job_id: str, out_dir: Path, start_date: str, end_date: str, pre
 
 
 def _new_job() -> tuple[str, dict]:
+    import time as _time
     job_id = str(uuid.uuid4())[:8]
     job = {
         "status": "running",
+        "_started": _time.time(),
         "queue": queue.Queue(),
         "stop_event": threading.Event(),
         "proc": None,
@@ -357,7 +402,7 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
         py = sys.executable
 
         # Phase 1: X/Twitter (the only automated source — no Claude/Anthropic calls anywhere in this pipeline)
-        _log(job_id, "=== [1/6] Collecting X/Twitter ===")
+        _phase(job_id, "[1/7] Collecting X/Twitter")
         x_out = str(tmp / "raw_x.json")
         accounts_file = str(BASE_DIR / "x_accounts.txt")
         if _run_cmd(job_id, [
@@ -370,7 +415,7 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
         # Phase 2: WeChat news articles (optional manual addition, not an automated source)
         wechat_articles = []
         if wechat_urls.strip():
-            _log(job_id, "=== [2/6] Collecting WeChat news articles ===")
+            _phase(job_id, "[2/7] Collecting WeChat news articles")
             urls_file = _save_wechat_urls(job_id, wechat_urls, tmp)
             if urls_file:
                 wc_out = str(tmp / "raw_wechat.json")
@@ -382,14 +427,14 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
                     with open(wc_out, encoding="utf-8") as f:
                         wechat_articles = json.load(f)
         else:
-            _log(job_id, "=== [2/6] No WeChat news URLs — skipping ===")
+            _phase(job_id, "[2/7] No WeChat news URLs — skipping")
 
         if _is_stopped(job_id): return
 
         # Phase 3: WeChat fundraising articles (optional)
         funding_wechat_summarized = None
         if wechat_funding_urls.strip():
-            _log(job_id, "=== [3/6] Collecting WeChat fundraising articles ===")
+            _phase(job_id, "[3/7] Collecting WeChat fundraising articles")
             funding_urls_file = tmp / "wechat_funding_urls.txt"
             funding_urls = [
                 u.strip() for u in wechat_funding_urls.splitlines()
@@ -415,20 +460,26 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
                 if os.path.exists(wc_funding_summarized):
                     funding_wechat_summarized = wc_funding_summarized
         else:
-            _log(job_id, "=== [3/6] No WeChat fundraising URLs — skipping ===")
+            _phase(job_id, "[3/7] No WeChat fundraising URLs — skipping")
 
         if _is_stopped(job_id): return
 
         # Phase 4: Deduplicate
-        _log(job_id, "=== [4/6] Deduplicating ===")
+        _phase(job_id, "[4/7] Deduplicating")
         sys.path.insert(0, str(BASE_DIR))
-        from tools.utils import deduplicate_articles
+        # news_filters.dedupe rather than utils.deduplicate_articles: it also
+        # collapses two posts linking to the same article, which is how the
+        # same story arrives twice once X posts carry the link they point at.
+        from tools.news_filters import dedupe
         all_articles = []
         if os.path.exists(x_out):
             with open(x_out, encoding="utf-8") as f:
                 all_articles.extend(json.load(f))
         all_articles.extend(wechat_articles)
-        unique = deduplicate_articles(all_articles)
+        unique, dedup_stats = dedupe(all_articles)
+        detail = ", ".join(f"{k}={v}" for k, v in dedup_stats.items() if v)
+        if detail:
+            _log(job_id, f"Removed {len(all_articles) - len(unique)} duplicate(s): {detail}")
         classified = str(tmp / "classified_articles.json")
         with open(classified, "w", encoding="utf-8") as f:
             json.dump(unique, f, ensure_ascii=False, indent=2)
@@ -439,18 +490,31 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
                 "check x_accounts.txt / NITTER_INSTANCES, or re-run later"
             )
 
-        # Phase 5: Summarise
-        _log(job_id, "=== [5/6] Summarising with Claude ===")
+        # Phase 5: Find the news article behind each link-less post. Most
+        # announcement tweets link nowhere; this is what turns them into a
+        # linked, article-backed entry instead of an unlinked headline
+        # summarized from 200 characters. Proposed links are verified against
+        # the post before they are accepted.
+        _phase(job_id, "[5/7] Finding source articles for link-less posts")
+        if _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "resolve_sources.py"),
+            "--input", classified, "--yes",
+        ]) == -1: return
+
+        # Phase 6: Summarise. --curate drops the articles the report would drop
+        # anyway before paying for them: each one is an LLM call and several
+        # seconds that produced nothing.
+        _phase(job_id, "[6/7] Summarising with Claude")
         summarized = str(tmp / "summarized_articles.json")
         lang_args = ["--language", "zh"] if language == "zh" else []
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
             "--input", classified, "--output", summarized,
-            "--provider", "claude", "--yes",
+            "--provider", "claude", "--yes", "--curate",
         ] + lang_args) == -1: return
 
         # Phase 6: Generate grouped Word doc
-        _log(job_id, "=== [6/6] Generating Word document ===")
+        _phase(job_id, "[7/7] Generating Word document")
         mode_args = (
             ["--chinese-only"] if language == "zh"
             else ["--translate"] if language == "both"
@@ -469,6 +533,7 @@ def _pipeline_ai_news(job_id, start_date, end_date, wechat_urls, language, wecha
         if output_file:
             jobs[job_id]["status"] = "done"
             jobs[job_id]["output_file"] = output_file
+            _log_timings(job_id)
             _log(job_id, "✓ Done! File ready for download.")
         else:
             raise RuntimeError("Output .docx not found after generation")
@@ -496,7 +561,7 @@ def _pipeline_deeptech(job_id, start_date, end_date, wechat_urls):
             raise ValueError("No WeChat URLs provided. Please paste at least one URL.")
 
         # Phase 1: Collect WeChat
-        _log(job_id, "=== [1/4] Collecting WeChat articles ===")
+        _phase(job_id, "[1/4] Collecting WeChat articles")
         urls_file = _save_wechat_urls(job_id, wechat_urls, tmp)
         wc_out = str(tmp / "raw_wechat.json")
         if _run_cmd(job_id, [
@@ -505,7 +570,7 @@ def _pipeline_deeptech(job_id, start_date, end_date, wechat_urls):
         ]) == -1: return
 
         # Phase 2: Summarise in Chinese
-        _log(job_id, "=== [2/4] Summarising with Claude ===")
+        _phase(job_id, "[2/4] Summarising with Claude")
         summarized = str(tmp / "summarized_wechat.json")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
@@ -517,7 +582,7 @@ def _pipeline_deeptech(job_id, start_date, end_date, wechat_urls):
         if _is_stopped(job_id): return
 
         # Phase 3: Generate flat Word doc with deeptech funding section
-        _log(job_id, "=== [3/4] Generating Word document ===")
+        _phase(job_id, "[3/4] Generating Word document")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "generate_word_doc.py"),
             "--start_date", start_date, "--end_date", end_date,
@@ -534,6 +599,7 @@ def _pipeline_deeptech(job_id, start_date, end_date, wechat_urls):
         if output_file:
             jobs[job_id]["status"] = "done"
             jobs[job_id]["output_file"] = output_file
+            _log_timings(job_id)
             _log(job_id, "✓ Done! File ready for download.")
         else:
             raise RuntimeError("Output .docx not found after generation")
@@ -561,7 +627,7 @@ def _pipeline_consumer(job_id, start_date, end_date, wechat_urls):
             raise ValueError("No WeChat URLs provided. Please paste at least one URL.")
 
         # Phase 1: Collect WeChat
-        _log(job_id, "=== [1/4] Collecting WeChat articles ===")
+        _phase(job_id, "[1/4] Collecting WeChat articles")
         urls_file = _save_wechat_urls(job_id, wechat_urls, tmp)
         wc_out = str(tmp / "raw_wechat.json")
         if _run_cmd(job_id, [
@@ -570,7 +636,7 @@ def _pipeline_consumer(job_id, start_date, end_date, wechat_urls):
         ]) == -1: return
 
         # Phase 2: Deduplicate
-        _log(job_id, "=== [2/4] Deduplicating ===")
+        _phase(job_id, "[2/4] Deduplicating")
         with open(wc_out, encoding="utf-8") as f:
             articles = json.load(f)
         seen, unique = set(), []
@@ -586,7 +652,7 @@ def _pipeline_consumer(job_id, start_date, end_date, wechat_urls):
         if _is_stopped(job_id): return
 
         # Phase 3: Summarise (consumer mode)
-        _log(job_id, "=== [3/4] Summarising with Claude (consumer mode) ===")
+        _phase(job_id, "[3/4] Summarising with Claude (consumer mode)")
         summarized = str(tmp / "summarized_wechat.json")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
@@ -596,7 +662,7 @@ def _pipeline_consumer(job_id, start_date, end_date, wechat_urls):
         ]) == -1: return
 
         # Phase 4: Generate consumer Word doc
-        _log(job_id, "=== [4/4] Generating Word document ===")
+        _phase(job_id, "[4/4] Generating Word document")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "generate_consumer_doc.py"),
             "--start_date", start_date, "--end_date", end_date,
@@ -608,6 +674,7 @@ def _pipeline_consumer(job_id, start_date, end_date, wechat_urls):
         if output_file:
             jobs[job_id]["status"] = "done"
             jobs[job_id]["output_file"] = output_file
+            _log_timings(job_id)
             _log(job_id, "✓ Done! File ready for download.")
         else:
             raise RuntimeError("Output .docx not found after generation")
@@ -632,7 +699,7 @@ def _pipeline_crypto(job_id, start_date, end_date, min_amount):
         py = sys.executable
 
         # Phase 1: Scrape RootData
-        _log(job_id, "=== [1/3] Scraping RootData fundraising data ===")
+        _phase(job_id, "[1/3] Scraping RootData fundraising data")
         raw_out = tmp / "raw_rootdata.json"
         rc = _run_cmd(job_id, [
             py, str(TOOLS_DIR / "collect_rootdata.py"),
@@ -646,7 +713,7 @@ def _pipeline_crypto(job_id, start_date, end_date, min_amount):
             raise RuntimeError("collect_rootdata.py produced no output — check Chrome/Selenium and that RootData is accessible")
 
         # Phase 2: Summarise with Claude
-        _log(job_id, "=== [2/3] Generating Info summaries with Claude ===")
+        _phase(job_id, "[2/3] Generating Info summaries with Claude")
         summarized = tmp / "summarized_rootdata.json"
         rc = _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_rootdata.py"),
@@ -663,7 +730,7 @@ def _pipeline_crypto(job_id, start_date, end_date, min_amount):
         if _is_stopped(job_id): return
 
         # Phase 3: Generate Excel
-        _log(job_id, "=== [3/3] Generating Excel spreadsheet ===")
+        _phase(job_id, "[3/3] Generating Excel spreadsheet")
         rc = _run_cmd(job_id, [
             py, str(TOOLS_DIR / "generate_crypto_sheet.py"),
             "--input", str(summarized),
@@ -688,6 +755,7 @@ def _pipeline_crypto(job_id, start_date, end_date, min_amount):
         if output_file:
             jobs[job_id]["status"] = "done"
             jobs[job_id]["output_file"] = output_file
+            _log_timings(job_id)
             _log(job_id, "✓ Done! File ready for download.")
         else:
             raise RuntimeError("Output .xlsx not found after generation")
@@ -710,7 +778,7 @@ def _pipeline_insights(job_id, start_date, end_date, language="en"):
         py = sys.executable
 
         # Phase 1: Collect TechCrunch
-        _log(job_id, "=== [1/7] Collecting TechCrunch ===")
+        _phase(job_id, "[1/7] Collecting TechCrunch")
         tc_out = tmp / "raw_techcrunch.json"
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "collect_techcrunch.py"),
@@ -719,7 +787,7 @@ def _pipeline_insights(job_id, start_date, end_date, language="en"):
         ]) == -1: return
 
         # Phase 2: Collect TLDR
-        _log(job_id, "=== [2/7] Collecting TLDR newsletters ===")
+        _phase(job_id, "[2/7] Collecting TLDR newsletters")
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "collect_tldr.py"),
             "--start_date", start_date, "--end_date", end_date,
@@ -727,29 +795,18 @@ def _pipeline_insights(job_id, start_date, end_date, language="en"):
         ]) == -1: return
 
         # Phase 3: Deduplicate
-        _log(job_id, "=== [3/7] Deduplicating articles ===")
+        _phase(job_id, "[3/7] Deduplicating articles")
         classified = tmp / "classified_articles.json"
-        dedup_script = f"""
-import json, pathlib
-files = ['{tmp}/raw_techcrunch.json', '{tmp}/raw_tldr_ai.json', '{tmp}/raw_tldr_main.json']
-all_a = []
-for f in files:
-    p = pathlib.Path(f)
-    if p.exists():
-        all_a += json.loads(p.read_text())
-seen, unique = set(), []
-for a in all_a:
-    url = a.get('url', '')
-    if url and url not in seen:
-        seen.add(url); unique.append(a)
-pathlib.Path('{classified}').write_text(json.dumps(unique, ensure_ascii=False, indent=2))
-print(f'Deduped: {{len(unique)}} articles')
-"""
-        if _run_cmd(job_id, [py, "-c", dedup_script]) == -1: return
+        if _run_cmd(job_id, [
+            py, str(TOOLS_DIR / "dedup_articles.py"),
+            "--inputs", f"{tmp}/raw_techcrunch.json",
+            f"{tmp}/raw_tldr_ai.json", f"{tmp}/raw_tldr_main.json",
+            "--output", str(classified),
+        ]) == -1: return
 
         # Phase 4: Summarize (Claude — just pre-processing input for the
         # Claude-based insight/debate steps below, which are unchanged)
-        _log(job_id, "=== [4/7] Summarizing articles with Claude ===")
+        _phase(job_id, "[4/7] Summarizing articles with Claude")
         summarized = tmp / "summarized_articles.json"
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "summarize_articles.py"),
@@ -760,7 +817,7 @@ print(f'Deduped: {{len(unique)}} articles')
         ]) == -1: return
 
         # Phase 5: Generate insights
-        _log(job_id, "=== [5/7] Generating investment insights ===")
+        _phase(job_id, "[5/7] Generating investment insights")
         insights_out = tmp / "insights.json"
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "generate_insights.py"),
@@ -769,7 +826,7 @@ print(f'Deduped: {{len(unique)}} articles')
         ]) == -1: return
 
         # Phase 6: Multi-agent debate
-        _log(job_id, "=== [6/7] Running bull / bear / partner debate ===")
+        _phase(job_id, "[6/7] Running bull / bear / partner debate")
         memos_out = tmp / "debate_memos.json"
         if _run_cmd(job_id, [
             py, str(TOOLS_DIR / "debate_agent.py"),
@@ -778,7 +835,7 @@ print(f'Deduped: {{len(unique)}} articles')
         ]) == -1: return
 
         # Phase 7: Deal sourcing + generate doc
-        _log(job_id, "=== [7/7] Sourcing deals + generating report ===")
+        _phase(job_id, "[7/7] Sourcing deals + generating report")
         deals_out = tmp / "deal_sourcing.json"
         _run_cmd(job_id, [
             py, str(TOOLS_DIR / "source_deals.py"),

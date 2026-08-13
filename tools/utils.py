@@ -42,6 +42,13 @@ CLAUDE_EFFORT = os.getenv('NEWS_CLAUDE_EFFORT', 'low')
 CLAUDE_MAX_TOKENS = int(os.getenv('NEWS_CLAUDE_MAX_TOKENS', '4096'))
 
 _claude_client = None
+_claude_client_lock = __import__('threading').Lock()
+
+# Per-request timeout for ordinary (non-search) calls. The client's own 600s
+# default is sized for web-search turns, which legitimately run for minutes; a
+# stuck article summary holding a worker for ten minutes is not the same thing.
+# Summaries normally return in 5-15s, so 180s is already generous.
+CLAUDE_TIMEOUT = int(os.getenv('NEWS_CLAUDE_TIMEOUT', '180'))
 
 
 def get_claude_client():
@@ -55,20 +62,28 @@ def get_claude_client():
     if _claude_client is not None:
         return _claude_client
 
-    try:
-        import anthropic
-    except ImportError:
-        print("  WARNING: anthropic package not installed. Run: pip install anthropic")
-        return None
+    # Calls now run concurrently, so several threads can reach this at once on
+    # the first batch. Without the lock they each build a client and race to
+    # assign the global — harmless but wasteful, and it defeats the shared
+    # connection pool this cache exists for.
+    with _claude_client_lock:
+        if _claude_client is not None:
+            return _claude_client
 
-    api_key = os.getenv('ANTHROPIC_API_KEY')
-    if not api_key:
-        print("  WARNING: ANTHROPIC_API_KEY not set in .env")
-        return None
+        try:
+            import anthropic
+        except ImportError:
+            print("  WARNING: anthropic package not installed. Run: pip install anthropic")
+            return None
 
-    # max_retries covers 429/5xx with exponential backoff, which is what the old
-    # hand-rolled `time.sleep(20 * attempt)` loops were doing by hand.
-    _claude_client = anthropic.Anthropic(api_key=api_key, max_retries=5, timeout=600.0)
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        if not api_key:
+            print("  WARNING: ANTHROPIC_API_KEY not set in .env")
+            return None
+
+        # max_retries covers 429/5xx with exponential backoff, which is what the old
+        # hand-rolled `time.sleep(20 * attempt)` loops were doing by hand.
+        _claude_client = anthropic.Anthropic(api_key=api_key, max_retries=5, timeout=600.0)
     return _claude_client
 
 
@@ -96,8 +111,7 @@ def call_claude(prompt: str, model: str = None, max_tokens: int = None,
         return ''
 
     budget = max(max_tokens or 0, CLAUDE_MAX_TOKENS)
-    if timeout is not None:
-        client = client.with_options(timeout=float(timeout))
+    client = client.with_options(timeout=float(timeout or CLAUDE_TIMEOUT))
 
     kwargs = {
         'model': model or CLAUDE_MODEL,
@@ -243,6 +257,70 @@ def translate_to_chinese_claude(text: str) -> str:
         f"{text}"
     )
     return call_claude(prompt, max_tokens=2048)
+
+
+# How many API calls run at once. The pipeline's wall-clock time was almost
+# entirely one-request-at-a-time waiting: a bi-weekly run makes ~150 Claude
+# calls of 5-15s each, plus one web search per day in the range, and did them
+# strictly in sequence.
+#
+# 6 is deliberately modest. These are long requests, not a burst, and the SDK
+# already retries 429s with backoff — the goal is to stop idling on the network,
+# not to find the rate limit. Raise with NEWS_MAX_WORKERS if your account's
+# limits allow; set it to 1 to get the old sequential behaviour back when
+# debugging, which also makes the log readable again.
+MAX_WORKERS = max(1, int(os.getenv('NEWS_MAX_WORKERS', '6')))
+
+
+def parallel_map(fn, items: list, workers: int = None, label: str = '',
+                 on_result=None) -> list:
+    """
+    Run `fn` over `items` concurrently, returning results in input order.
+
+    Order preservation is the point: every caller here writes the results back
+    into a list or a document where position is meaningful, so a plain
+    as-completed loop would quietly shuffle the report.
+
+    An exception in one item does not abort the batch — it is reported and that
+    slot comes back as None, matching how the sequential code treated a failed
+    call. `on_result(index, item, result)` fires as each finishes, under a lock,
+    for progress printing and incremental saving.
+    """
+    if not items:
+        return []
+    workers = workers or MAX_WORKERS
+    if workers <= 1 or len(items) == 1:
+        results = []
+        for i, item in enumerate(items):
+            try:
+                r = fn(item)
+            except Exception as exc:
+                print(f"  WARNING: {label or 'task'} failed for item {i}: {exc}")
+                r = None
+            results.append(r)
+            if on_result:
+                on_result(i, item, r)
+        return results
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    import threading
+
+    results = [None] * len(items)
+    lock = threading.Lock()
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(fn, item): i for i, item in enumerate(items)}
+        for future in as_completed(futures):
+            i = futures[future]
+            try:
+                results[i] = future.result()
+            except Exception as exc:
+                print(f"  WARNING: {label or 'task'} failed for item {i}: {exc}")
+                results[i] = None
+            if on_result:
+                with lock:
+                    on_result(i, items[i], results[i])
+    return results
 
 
 def validate_date_range(start_date: str, end_date: str) -> Tuple[datetime, datetime]:

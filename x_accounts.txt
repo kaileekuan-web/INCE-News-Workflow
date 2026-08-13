@@ -5,17 +5,32 @@
 #   handle        -> pull that account's timeline (with or without a leading @)
 #   search: QUERY -> pull a Nitter tweet search for QUERY (trending / funding)
 #
+# WHAT THIS REPORT COVERS: smaller AI startups, and events rather than opinion.
+# Two filters apply to every account here, before any per-account level below:
+#
+#   - Stories about the companies in `frontier_labs.txt` (OpenAI, Anthropic,
+#     Google/DeepMind, Meta, big tech …) are dropped. A startup story that
+#     mentions one of them is kept — the test is who the story is ABOUT.
+#   - Posts carrying an opinion marker ("my take", "unpopular opinion") are
+#     dropped, at every level.
+#
+# This is why the frontier labs' own accounts are commented out below rather
+# than listed: every post they make is dropped, so fetching them spends two
+# seconds of rate-limit budget to collect nothing. Uncomment them (and pass
+# --include-frontier) to put big-lab coverage back in the report.
+#
 # SELECTIVITY — every post kept here becomes one LLM call downstream, so this
 # file is a cost control as much as a source list. A `#filter:` line sets the
 # level for every handle below it until the next one:
 #
-#   #filter: off     keep everything. For official lab/company accounts whose
-#                    feeds are already on-topic.
+#   #filter: off     keep everything. For official company accounts whose feeds
+#                    are already on-topic.
 #   #filter: on      must mention AI. For founders and researchers, who also
 #                    post personal takes, conference photos and jokes.
 #   #filter: strict  must mention AI AND read as news (launch / raise / acquire
-#                    / partnership / benchmark …), not commentary. For VCs, who
-#                    post a lot of opinion around a little signal.
+#                    / partnership / benchmark …), not commentary.
+#   #filter: news    strict, and nothing that reads as a take. For VCs and press
+#                    accounts, which mix reporting with punditry.
 #
 # Regardless of level, these are always dropped: retweets, posts under 60
 # characters of real text, pure calls-to-action ("sign up", "link in bio"),
@@ -30,46 +45,52 @@
 # auto|always|never.
 #
 # The `search:` lines below always go through Claude web search: public Nitter
-# instances disabled tweet search, so before that fallback existed these lines
-# silently returned nothing on every run. Results are uncurated and are always
-# filtered at `strict`.
+# instances disabled tweet search. They are also the most productive lines in
+# this file for THIS report — a web search returns the article itself, so those
+# items arrive with a real link, while a plain tweet usually links nowhere.
 #
 # Edit this list freely — it is the single source of truth for who we follow.
 
-# ── AI labs & companies ─────────────────────────────────────────────
+# ── Independent AI companies ────────────────────────────────────────
 # Product announcements straight from the source. Unfiltered.
 #filter: off
-OpenAI
-AnthropicAI
-GoogleDeepMind
-GoogleAI
-AIatMeta
-MistralAI
-xai
-StabilityAI
 cohere
 perplexity_ai
 midjourney
 runwayml
+StabilityAI
+huggingface
+LangChainAI
+weights_biases
+scale_AI
+ElevenLabsio
+SakanaAILabs
+cursor_ai
 
 # ── Founders & researchers ──────────────────────────────────────────
 # High signal when on-topic, noisy otherwise — require an AI mention.
+# Frontier-lab figures (@sama, @gdb, @demishassabis, @ylecun, @_jasonwei,
+# @alexandr_wang) are left out: their posts are lab news, which this report
+# excludes by design.
 #filter: on
-sama
-gdb
 karpathy
-ylecun
 AndrewYNg
-demishassabis
-JimFan
-alexandr_wang
 clementdelangue
 drfeifei
-_jasonwei
+JimFan
 
-# ── VCs & investors (market/commentary signal) ──────────────────────
+# ── Startup & funding press ─────────────────────────────────────────
+# These accounts report other companies' news, which is exactly what this
+# report wants — and they post plenty of commentary around it, hence `news`.
+#filter: news
+TechCrunch
+venturebeat
+Crunchbase
+ycombinator
+
+# ── VCs & investors (market signal) ─────────────────────────────────
 # Mostly opinion. Keep only posts that report an actual event.
-#filter: strict
+#filter: news
 saranormous
 martin_casado
 bgurley
@@ -78,9 +99,26 @@ packyM
 nathanbenaich
 eladgil
 natfriedman
-balajis
 
-# ── Trending / funding searches (best-effort; Nitter search may be off) ──
-search: AI funding round
-search: AI startup raises Series
-search: AI raised seed
+# ── Startup news searches ───────────────────────────────────────────
+# Each line is one Claude web-search turn. These carry the report: a search
+# returns the article, so these items arrive with a link to the actual news
+# rather than to a tweet about it. Keep them aimed at smaller companies —
+# a generic "AI news" query comes back full of frontier-lab coverage that the
+# filters then throw away, which is a search turn paid for and wasted.
+search: AI startup raises seed round
+search: AI startup raises Series A
+search: AI startup raises Series B funding
+search: AI startup launches product out of stealth
+search: AI startup acquired acquisition
+search: enterprise AI startup customers announcement
+
+# ── Frontier labs (excluded — see the note at the top of this file) ──
+# #filter: off
+# OpenAI
+# AnthropicAI
+# GoogleDeepMind
+# GoogleAI
+# AIatMeta
+# MistralAI
+# xai

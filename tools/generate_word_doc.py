@@ -3,6 +3,12 @@
 Generate Word document with AI News table:
 - Title (hyperlinked) + Date + Source | Summary (with optional Chinese translation)
 
+Editorial rules applied before anything is rendered (tools/news_filters.py):
+duplicates collapsed always; for --funding-topic ai, stories about frontier
+labs / big tech and opinion pieces are dropped, so the table is about smaller
+AI startups. Headlines link to the news a post pointed at — never to x.com.
+Relax with --include-frontier / --include-opinion.
+
 Uses python-docx for formatting
 """
 
@@ -22,9 +28,12 @@ from tools.utils import (
     call_claude,
     call_claude_search,
     translate_to_chinese_claude,
+    parallel_map,
+    MAX_WORKERS,
 )
 from tools.detect_funding import extract_funding_with_claude
 from tools.verify_emit import emit_funding_claims
+from tools.news_filters import curate, news_link
 
 try:
     from docx import Document
@@ -393,20 +402,29 @@ def extract_funding_with_web_search(api_key: str, start_date: str, end_date: str
     end_dt = datetime.strptime(end_date, "%Y-%m-%d")
 
     total_days = (end_dt - start_dt).days + 1
-    print(f"  Searching {total_days} day(s): {start_date} to {end_date}")
+    days = [(start_dt + timedelta(days=n)).strftime("%Y-%m-%d")
+            for n in range(total_days)]
+    print(f"  Searching {total_days} day(s): {start_date} to {end_date} "
+          f"({MAX_WORKERS} at a time)")
+
+    # One web-search turn per day, run concurrently. Sequentially this was the
+    # single slowest step in the pipeline — a fortnight's range meant 14 search
+    # turns of 30-60s each, back to back, for 7-15 minutes of waiting.
+    # The days are independent, so the only thing the old loop bought was order,
+    # which parallel_map preserves anyway.
+    done = [0]
+
+    def _report(_i, date_str, events):
+        done[0] += 1
+        print(f"  [{done[0]}/{total_days}] {date_str}: {len(events or [])} event(s)")
+
+    per_day = parallel_map(
+        lambda date_str: _search_funding_single_day(api_key, date_str, topic),
+        days, label='funding search', on_result=_report)
 
     all_events = []
-    current = start_dt
-    day_num = 0
-    while current <= end_dt:
-        day_num += 1
-        date_str = current.strftime("%Y-%m-%d")
-        print(f"  [{day_num}/{total_days}] Searching {date_str}...")
-        events = _search_funding_single_day(api_key, date_str, topic)
-        print(f"    Found {len(events)} events")
-        all_events.extend(events)
-        current += timedelta(days=1)
-        time.sleep(1.0)  # rate limiting between days
+    for events in per_day:
+        all_events.extend(events or [])
 
     unique = _merge_funding_events(all_events, [])
     print(f"  Total unique funding events: {len(unique)}")
@@ -872,10 +890,50 @@ def create_watchlist_section(doc: Document, articles: list,
                          idx, len(articles_sorted), show_priority=True)
 
 
+# Translations are done up front, in parallel, then read from here while the
+# document is built. python-docx is not thread-safe and the build is sequential
+# by nature, so translating inside the render loop meant one blocking API call
+# per article with nothing else in flight.
+_TRANSLATIONS: dict = {}
+
+
+def _translate_with_retry(text: str) -> str:
+    for attempt in range(3):
+        out = translate_to_chinese_claude(text)
+        if out:
+            return out
+        time.sleep(2 * (attempt + 1))
+    return ''
+
+
+def pretranslate(texts: list):
+    """Translate every distinct string now, concurrently, into _TRANSLATIONS."""
+    todo = [t for t in dict.fromkeys(texts) if t and t not in _TRANSLATIONS]
+    if not todo:
+        return
+    print(f"  Translating {len(todo)} text(s) ({MAX_WORKERS} at a time)...")
+    results = parallel_map(_translate_with_retry, todo, label='translate')
+    for text, result in zip(todo, results):
+        # Falling back to the original text keeps the report readable when a
+        # translation fails, which is what the old inline retry loop did too.
+        _TRANSLATIONS[text] = result or text
+
+
+def translate_cached(text: str) -> str:
+    """The pre-translated string, translating on the spot if it was missed."""
+    if not text:
+        return text
+    if text not in _TRANSLATIONS:
+        _TRANSLATIONS[text] = _translate_with_retry(text) or text
+    return _TRANSLATIONS[text]
+
+
 def _fill_summary_cell(cell, article: dict, translate: bool, chinese_only: bool):
     """Fill the summary cell: hyperlinked title + body paragraph(s) with proper spacing."""
     title = article.get('title', '无标题')
-    url = article.get('url', '')
+    # The news behind the post, never the post itself — an x.com link is
+    # provenance, not a source. Falls back to an unlinked headline.
+    url = news_link(article)
     vc_signal = article.get('vc_signal', '')
 
     title_para = cell.paragraphs[0]
@@ -895,7 +953,10 @@ def _fill_summary_cell(cell, article: dict, translate: bool, chinese_only: bool)
         set_run_font(badge_run, font_size=9)
         badge_run.font.color.rgb = VC_SIGNAL_COLORS[vc_signal]
 
-    summary = article.get('summary', article.get('description', '暂无摘要'))
+    # `or` rather than a .get default: a summarization that failed leaves an
+    # empty string, and a present-but-empty key would render a blank cell.
+    summary = (article.get('summary') or article.get('description')
+               or article.get('title') or '暂无摘要')
     summary_text = convert_bullets_to_paragraph(summary)
 
     if chinese_only:
@@ -904,17 +965,10 @@ def _fill_summary_cell(cell, article: dict, translate: bool, chinese_only: bool)
         body.paragraph_format.space_after = Pt(4)
         add_formatted_text(body, summary_text, font_size=10)
     elif translate:
-        chinese = None
-        for attempt in range(3):
-            chinese = translate_to_chinese_claude(summary_text)
-            if chinese:
-                break
-            time.sleep(3 * (attempt + 1))
         body = cell.add_paragraph()
         body.paragraph_format.space_before = Pt(0)
         body.paragraph_format.space_after = Pt(4)
-        add_formatted_text(body, chinese if chinese else summary_text, font_size=10)
-        time.sleep(0.5)
+        add_formatted_text(body, translate_cached(summary_text), font_size=10)
     else:
         body = cell.add_paragraph()
         body.paragraph_format.space_before = Pt(0)
@@ -935,9 +989,6 @@ def _add_article_row(table, article: dict, translate: bool,
                      chinese_only: bool, idx: int, total: int,
                      show_priority: bool = False):
     """Write one article as a table row. Shared by flat and grouped layouts."""
-    if translate:
-        print(f"  [{idx+1}/{total}] Translating...")
-
     row_cells = table.add_row().cells
 
     date_para = row_cells[0].paragraphs[0]
@@ -1045,7 +1096,10 @@ def generate_word_doc(start_date: str, end_date: str,
                       funding_topic: str = 'ai',
                       doc_title: str = None,
                       min_signal: int = 1,
-                      watchlist_file: str = 'watchlist.txt'):
+                      watchlist_file: str = 'watchlist.txt',
+                      include_frontier: bool = False,
+                      include_opinion: bool = False,
+                      require_source: bool = True):
     """
     Main document generation function
 
@@ -1072,6 +1126,15 @@ def generate_word_doc(start_date: str, end_date: str,
 
     print(f"Loaded {len(articles)} articles")
 
+    # Editorial rules: no duplicates, and for the AI brief no frontier labs and
+    # no opinion pieces. The deeptech report shares the dedup but not the
+    # startups-only line — that is the AI report's editorial choice, not a
+    # property of every report this function builds.
+    print("Curating...")
+    articles = curate(articles, include_frontier, include_opinion,
+                      dedupe_only=(funding_topic != 'ai'),
+                      require_source=require_source)
+
     # Drop articles below the requested relevance threshold before building the doc.
     # Scores were assigned during summarization (1=low value, 5=must-read VC signal).
     # Default is 1 (keep everything); pass --min-signal 3 to cut noise for a tighter brief.
@@ -1087,6 +1150,11 @@ def generate_word_doc(start_date: str, end_date: str,
 
     if translate:
         print("Translation enabled (Claude)")
+        # Every summary that will be rendered, translated in one concurrent
+        # batch before the document is built. Doing it here also means the
+        # per-article "[3/40] Translating..." wait is gone from the render loop.
+        pretranslate([convert_bullets_to_paragraph(
+            a.get('summary', a.get('description', ''))) for a in articles])
 
     # Check for the Anthropic key for funding extraction
     anthropic_key = os.getenv('ANTHROPIC_API_KEY')
@@ -1210,6 +1278,18 @@ def main():
     parser.add_argument('--watchlist', default='watchlist.txt', metavar='FILE',
                         help='Path to watchlist file (default: watchlist.txt). '
                              'One company name per line. Matching articles appear in a highlights section.')
+    parser.add_argument('--include-frontier', action='store_true',
+                        help='Keep stories about frontier labs and big tech '
+                             '(frontier_labs.txt). Off by default for --funding-topic ai: '
+                             'the news table covers smaller AI startups.')
+    parser.add_argument('--include-opinion', action='store_true',
+                        help='Keep commentary, opinion pieces and executive statements. '
+                             'Off by default: the news table is for reported events.')
+    parser.add_argument('--allow-unlinked', dest='require_source',
+                        action='store_false',
+                        help='Keep articles with no link to published coverage, as '
+                             'unlinked headlines. By default they are dropped — run '
+                             'tools/resolve_sources.py first to find their coverage.')
     args = parser.parse_args()
 
     generate_word_doc(
@@ -1225,6 +1305,9 @@ def main():
         args.doc_title,
         args.min_signal,
         args.watchlist,
+        args.include_frontier,
+        args.include_opinion,
+        args.require_source,
     )
 
 

@@ -1,0 +1,56 @@
+# Frontier labs & big tech — EXCLUDED from the general AI news report.
+#
+# The general news report is about smaller AI startups. Anything on this list is
+# already covered everywhere else, so it is filtered out of the news table (the
+# funding tables are unaffected — a frontier lab investing in a startup is still
+# a startup story).
+#
+# FORMAT — one lab per line:
+#
+#   Display Name: alias, another alias, @handle, domain.com
+#
+#   @handle    an X account. A post BY this account is dropped outright.
+#   domain.com a website. An article on this domain is dropped outright.
+#   alias      a plain word/phrase (company, product or founder name). Dropped
+#              when it is the SUBJECT of the story — i.e. it appears in the
+#              opening of the headline. A passing mention further in ("built on
+#              GPT-5", "ex-OpenAI founders") does NOT drop the story, because
+#              those are exactly the startup stories we want to keep.
+#
+# Matching is case-insensitive and whole-word, so "meta" won't match "metadata"
+# and "ai21" won't match "ai2100". Multi-word aliases match as phrases.
+#
+# Edit freely: delete a line to let that company back into the report, add a
+# line to exclude another. `collect_x.py --include-frontier` and
+# `generate_ai_doc.py --include-frontier` bypass this file entirely.
+
+# ── Frontier model labs ─────────────────────────────────────────────
+OpenAI: openai, chatgpt, gpt-4, gpt-4o, gpt-5, gpt5, sora, dall-e, dall·e, codex, sam altman, @OpenAI, @sama, @gdb, openai.com
+Anthropic: anthropic, claude, claude code, dario amodei, @AnthropicAI, @DarioAmodei, anthropic.com
+Google DeepMind: google deepmind, deepmind, gemini, google ai, demis hassabis, @GoogleDeepMind, @GoogleAI, @demishassabis, deepmind.com, deepmind.google
+Meta AI: meta ai, meta superintelligence, fair, llama, yann lecun, @AIatMeta, @ylecun, ai.meta.com
+xAI: xai, x.ai, grok, elon musk, 马斯克, @xai
+Microsoft AI: microsoft ai, copilot, azure ai, mustafa suleyman, @MSFTCopilot
+Amazon AGI: amazon agi, amazon bedrock, aws ai, alexa+, titan model
+Apple Intelligence: apple intelligence, siri ai
+Mistral AI: mistral, le chat, @MistralAI, mistral.ai
+DeepSeek: deepseek, @deepseek_ai, deepseek.com
+Qwen / Alibaba: qwen, tongyi, alibaba, 阿里巴巴, 阿里云, @Alibaba_Qwen
+
+# ── Big tech (the Mag 7, plus the Chinese equivalents) ──────────────
+# The bare company name, for the stories the AI-division names above miss
+# ("Google released…", "Meta is building…"). A story that merely name-drops one
+# of these still survives — see the subject rule at the top of this file.
+Google: google, 谷歌, alphabet, sundar pichai, blog.google, @Google
+Meta: meta, facebook, instagram, whatsapp, 脸书, zuckerberg, @Meta
+Microsoft: microsoft, 微软, azure, bing, satya nadella, microsoft.com, @Microsoft
+Amazon: amazon, 亚马逊, aws, andy jassy, amazon.com, @amazon
+Apple: apple, 苹果, tim cook, apple.com, @Apple
+ByteDance: bytedance, 字节跳动, tiktok, doubao, seedance
+Tencent: tencent, 腾讯, hunyuan
+Baidu: baidu, 百度, ernie
+
+Tesla: tesla, 特斯拉, optimus robot, full self-driving, @Tesla
+
+# ── Chip & infra incumbents (not startups) ──────────────────────────
+NVIDIA: nvidia, cuda, jensen huang, @nvidia, nvidia.com

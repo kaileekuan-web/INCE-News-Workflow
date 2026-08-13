@@ -77,16 +77,21 @@ def run_pipeline(start_date: str, end_date: str) -> Path:
         "--output", x_out,
     ], "Collecting X/Twitter")
 
-    # Merge and deduplicate collected articles
-    from tools.utils import deduplicate_articles
+    # Merge and deduplicate collected articles. news_filters.dedupe is the same
+    # pass the webapp and the document generators run, so a scheduled report is
+    # deduplicated on the same terms as a manual one — including two posts that
+    # link to the same article.
+    from tools.news_filters import dedupe
     all_articles = []
     p = Path(x_out)
     if p.exists():
         with open(p, encoding="utf-8") as f:
             all_articles.extend(json.load(f))
 
-    unique = deduplicate_articles(all_articles)
-    print(f"\nDeduped: {len(unique)} unique posts from {len(all_articles)} total")
+    unique, dedup_stats = dedupe(all_articles)
+    detail = ', '.join(f"{k}={v}" for k, v in dedup_stats.items() if v)
+    print(f"\nDeduped: {len(unique)} unique posts from {len(all_articles)} total"
+          + (f" ({detail})" if detail else ""))
     if not unique:
         raise RuntimeError(
             "No posts collected — Nitter instances may be down/rate-limited. "
@@ -97,11 +102,20 @@ def run_pipeline(start_date: str, end_date: str) -> Path:
     with open(classified, "w", encoding="utf-8") as f:
         json.dump(unique, f, ensure_ascii=False, indent=2)
 
+    # Find the published article behind each link-less post, and verify it
+    # before accepting it. Without this the scheduled report is mostly unlinked
+    # headlines summarized from tweet text — and unlinked items are dropped at
+    # document generation.
+    _run([
+        py, str(TOOLS_DIR / "resolve_sources.py"),
+        "--input", classified, "--yes",
+    ], "Finding source articles")
+
     summarized = str(tmp / "summarized_articles.json")
     _run([
         py, str(TOOLS_DIR / "summarize_articles.py"),
         "--input", classified, "--output", summarized,
-        "--provider", "claude", "--yes", "--language", "zh",
+        "--provider", "claude", "--yes", "--language", "zh", "--curate",
     ], "Summarising with Claude")
 
     _run([

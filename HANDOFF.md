@@ -107,11 +107,18 @@ Each tool is a standalone Python script that does one thing well.
 | `collect_rootdata.py` | Scrapes crypto fundraising deals | RootData.com (headless Chrome) | `.tmp/raw_rootdata.json` |
 | `collect_substack.py` | Fetches Z Potentials newsletter via RSS | Substack | `.tmp/raw_substack.json` |
 
+**Editorial Filters**
+
+| Script | What It Does |
+|--------|-------------|
+| `news_filters.py` | The AI News report's four editorial rules, shared by the collectors and the document generators: **smaller AI startups only** (frontier labs and big tech from `frontier_labs.txt` are dropped, but a startup story that merely mentions one is kept), **news not opinion**, **no duplicates** (same link / same wording / same story), and **never link to x.com** (headlines link to the article a post pointed at). Run `python tools/news_filters.py` for its self-tests. |
+| `dedup_articles.py` | Merges collector output into one deduplicated file. Wraps `news_filters.dedupe`. |
+
 **Summarizers**
 
 | Script | What It Does |
 |--------|-------------|
-| `summarize_articles.py` | Fetches full article content, generates AI summaries with Claude. `--language zh` for Chinese output. Summary length scales to source length and every figure is checked against the source. |
+| `summarize_articles.py` | Fetches full article content, generates AI summaries with Claude. `--language zh` for Chinese output. Summary length scales to source length and every figure is checked against the source. When a post links to an article, the **article** is fetched and summarized rather than the post. Also assigns `subject_type` (frontier_lab / big_tech / startup / other) and `content_type` (news / opinion), which the document generators filter on. |
 | `grounding.py` | Arithmetic grounding check — normalizes figures on both sides (so `$50 million` matches `5000万美元`) and reports any number in a summary the source doesn't support. Run `python tools/grounding.py` for its self-tests. |
 | `summarize_rootdata.py` | Generates bilingual company descriptions for crypto deals using Claude. |
 
@@ -119,8 +126,8 @@ Each tool is a standalone Python script that does one thing well.
 
 | Script | Output Format | Notes |
 |--------|--------------|-------|
-| `generate_word_doc.py` | `.docx` — AI News | 2-column table (Date \| Chinese+English summary), + fundraising table via ChatGPT web search |
-| `generate_ai_doc.py` | `.docx` — AI News (grouped) | Articles grouped by company category (OpenAI / Anthropic / BigTech / Other) |
+| `generate_word_doc.py` | `.docx` — AI News | 2-column table (Date \| Chinese+English summary), + fundraising table via Claude web search. Applies the editorial filters (`--include-frontier` / `--include-opinion` to relax) |
+| `generate_ai_doc.py` | `.docx` — AI News (webapp) | Flat table of startup news, oldest first. Same editorial filters; the old OpenAI / Anthropic / BigTech / Other grouping returns only with `--include-frontier` |
 | `generate_consumer_doc.py` | `.docx` — Consumer News | Chinese-only, 消费科技新闻摘要 + 消费科技融资动态 |
 | `generate_crypto_sheet.py` | `.xlsx` — Crypto | 6-column Excel with dark navy header, frozen row, hyperlinked company names |
 
@@ -128,7 +135,8 @@ Each tool is a standalone Python script that does one thing well.
 
 | Script | What It Does |
 |--------|-------------|
-| `utils.py` | Shared functions: date validation, text cleaning, deduplication |
+| `utils.py` | Shared functions: date validation, text cleaning, deduplication, Claude API calls, and `parallel_map` — the concurrency helper every slow step runs through (`NEWS_MAX_WORKERS`, default 6; set to 1 for sequential) |
+| `resolve_sources.py` | Finds and verifies the published article behind a link-less X post, so entries link to real coverage and get summarized from the article rather than the tweet |
 | `detect_funding.py` | Keyword-based funding event classifier (not used in current main workflows) |
 | `translate_content.py` | Standalone Claude translation utility for one-off backfills, not used by any pipeline (the pipelines summarize straight into Chinese instead). Delegates to `translate_to_chinese_claude` in `tools/utils.py`. |
 
@@ -147,6 +155,9 @@ Markdown files that document exactly how to run each pipeline, including command
 |------|---------|---------|
 | `.env` | All API keys and environment variables | No (gitignored) |
 | `.env.example` | Template showing which keys are needed | Yes |
+| `x_accounts.txt` | X accounts and topic searches the AI News report follows, with a per-section selectivity level | Yes |
+| `frontier_labs.txt` | Companies excluded from the AI News table (aliases, X handles, domains). Delete a line to let a company back in — no code change needed | Yes |
+| `watchlist.txt` | Companies to surface in a highlights section when mentioned | Yes |
 | `credentials.json` | Google OAuth client secret (from Google Cloud Console) | No (gitignored) |
 | `token.json` | Gmail OAuth access token (auto-generated on first auth) | No (gitignored) |
 

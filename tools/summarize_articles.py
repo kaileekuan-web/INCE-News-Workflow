@@ -31,8 +31,9 @@ except ImportError:
     sys.exit(1)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import call_claude
+from tools.utils import call_claude, parallel_map, MAX_WORKERS
 from tools.grounding import unsupported_figures
+from tools.news_filters import news_link, curate
 
 
 def is_x_twitter_link(url: str, timeout: int = 5) -> bool:
@@ -198,14 +199,17 @@ SUMMARY_PROMPT_ZH = (
 # weight what actually matters for investment decisions: funding rounds, founder moves,
 # market-shifting partnerships — not just technically interesting news.
 SUMMARY_PROMPT_AI = (
-    "你是一位AI行业分析师，服务于专注AI领域的风险投资机构。请分析以下文章，用JSON格式返回四项内容：\n\n"
+    "你是一位AI行业分析师，服务于专注AI领域的风险投资机构。请分析以下文章，用JSON格式返回六项内容：\n\n"
     "1. category（类别）— 选择以下之一：\n"
     "   \"模型与研究\"：新模型发布、研究论文、技术突破、基准测试\n"
     "   \"产品与应用\"：新产品功能、应用场景、用户工具\n"
     "   \"大科技公司\"：Google、Apple、Meta、Microsoft、Amazon、NVIDIA、xAI等大型科技公司动态\n"
     "   \"政策与安全\"：AI监管、安全研究、伦理讨论、政府政策\n"
     "   \"行业动态\"：公司战略、合作、市场趋势、商业新闻\n"
-    "   \"其他\"：不属于以上类别\n\n"
+    "   \"其他\"：属于AI领域但不属于以上类别\n"
+    "   \"非AI\"：这条新闻与AI/人工智能没有实质关系（例如纯生物医药、传统金融、"
+    "消费零售、传统制造的公司动态）。只要报道主体公司的核心业务不以AI为基础，就填\"非AI\"，"
+    "不要因为文中出现「技术」「数据」等词就归入AI。\n\n"
     "2. relevance（投资价值评分，1-5整数）——从VC视角衡量该新闻对投资决策的参考价值：\n"
     "   5 = 必读：融资轮次（A轮以上大额）、重大收购、技术颠覆性突破、监管重大政策变化\n"
     "   4 = 重要：新公司/产品进入市场、重要战略合作、知名创始人新动向、市场格局变化\n"
@@ -220,11 +224,31 @@ SUMMARY_PROMPT_AI = (
     "   \"regulatory\"：监管政策、法规变化、政府动向\n"
     "   \"research\"：研究成果、学术发现、技术验证\n"
     "   \"other\"：不属于以上类别\n\n"
-    "4. summary（中文摘要）：{length_rule}自然段，涵盖发生了什么、涉及方，以及原文本身已说明的意义。"
+    "4. subject_type（报道主体类型）— 这篇报道「讲的是谁」，选择以下之一：\n"
+    "   \"frontier_lab\"：前沿大模型实验室——OpenAI、Anthropic、Google DeepMind、Meta AI、xAI、"
+    "Mistral、DeepSeek、阿里通义千问等\n"
+    "   \"big_tech\"：大型科技公司——Google、微软、Amazon、Apple、Meta、英伟达、字节、腾讯、阿里等\n"
+    "   \"startup\"：独立的中小型AI创业公司（无论融资阶段）\n"
+    "   \"other\"：高校、研究机构、政府监管方、行业整体趋势等，不以某家公司为主体\n"
+    "   判断标准是「报道的主体」，不是「文中出现过谁」。"
+    "例如「某创业公司融资，用于对标OpenAI」「由前DeepMind研究员创立的公司发布产品」，"
+    "主体都是创业公司，应填 \"startup\"。\n\n"
+    "5. content_type（内容性质）— 选择以下之一：\n"
+    "   \"news\"：报道了具体发生的事件——发布、融资、收购、合作、人事变动、监管处罚、"
+    "可验证的测评结果等，有明确的时间、主体和事实\n"
+    "   \"statement\"：某人「说了什么」而非「做了什么」——高管发言、内部讲话、访谈、"
+    "播客、大会演讲、对行业的预判、对他人新闻的回应。即使消息真实、来源可靠，"
+    "只要核心是言论就填 statement\n"
+    "   \"opinion\"：观点、评论、分析、行业感想、经验分享，以及以设问、号召、宣传为主的内容\n"
+    "   判断顺序：先看有没有具体事件。"
+    "「某公司CEO表示公司完成3.5亿美元融资」核心事件是融资，填 news；"
+    "「某公司CEO表示AI推理成本将持续下降」没有事件，只有观点表述，填 statement。\n\n"
+    "6. summary（中文摘要）：{length_rule}自然段，涵盖发生了什么、涉及方，以及原文本身已说明的意义。"
     "直接从事实开始，不用「本文报道」等引导语。\n\n"
     + GROUNDING_RULES_ZH +
     "\n仅返回JSON，不含其他文字：\n"
-    "{{\"category\": \"模型与研究\", \"relevance\": 4, \"vc_signal\": \"research\", \"summary\": \"...\"}}\n\n"
+    "{{\"category\": \"模型与研究\", \"relevance\": 4, \"vc_signal\": \"research\", "
+    "\"subject_type\": \"startup\", \"content_type\": \"news\", \"summary\": \"...\"}}\n\n"
     "文章内容：\n{text}"
 )
 
@@ -468,12 +492,21 @@ def generate_summary_claude(title: str, description: str, content: str,
             cat_match = re.search(r'"category"\s*:\s*"([^"]+)"', json_text)
             rel_match = re.search(r'"relevance"\s*:\s*([1-5])', json_text)
             vc_match = re.search(r'"vc_signal"\s*:\s*"([^"]+)"', json_text)
+            subj_match = re.search(
+                r'"subject_type"\s*:\s*"(frontier_lab|big_tech|startup|other)"', json_text)
+            type_match = re.search(
+                r'"content_type"\s*:\s*"(news|statement|opinion)"', json_text)
             sum_marker = '"summary": "'
             sum_pos = json_text.find(sum_marker)
 
             category = cat_match.group(1) if cat_match else '其他'
             relevance = int(rel_match.group(1)) if rel_match else 3
             vc_signal = vc_match.group(1) if vc_match else 'other'
+            # Unparseable classification defaults to the permissive value:
+            # a filter that silently eats articles because the model phrased a
+            # field oddly is worse than one that lets a few through to review.
+            subject_type = subj_match.group(1) if subj_match else 'other'
+            content_type = type_match.group(1) if type_match else 'news'
 
             if sum_pos != -1:
                 summary_raw = json_text[sum_pos + len(sum_marker):]
@@ -483,14 +516,17 @@ def generate_summary_claude(title: str, description: str, content: str,
 
             summary_text, flags = _ground_summary(summary_text, text_to_summarize)
             result = {'category': category, 'relevance': relevance,
-                      'vc_signal': vc_signal, 'summary': summary_text}
+                      'vc_signal': vc_signal, 'subject_type': subject_type,
+                      'content_type': content_type, 'summary': summary_text}
             if flags:
                 result['grounding_flags'] = flags
             return result
 
         except Exception:
             print(f"  WARNING: Could not parse categorize response, using defaults")
-            return {'category': '其他', 'relevance': 3, 'vc_signal': 'other', 'summary': fallback_summary}
+            return {'category': '其他', 'relevance': 3, 'vc_signal': 'other',
+                    'subject_type': 'other', 'content_type': 'news',
+                    'summary': fallback_summary}
 
     text, flags = _ground_summary(text, text_to_summarize)
     result = {'summary': text}
@@ -523,7 +559,8 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
                       skip_confirm: bool = False,
                       language: str = 'en',
                       consumer: bool = False,
-                      categorize: bool = False):
+                      categorize: bool = False,
+                      pre_curate: bool = False):
     """
     Main summarization function
 
@@ -555,27 +592,55 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
     total_articles = len(articles)
     print(f"Loaded {total_articles} articles")
 
+    # Drop what the report would drop anyway, before paying to summarize it.
+    # The document generators run this same curation at the end; anything it
+    # removes there was an LLM call and 5-15 seconds spent on an article that
+    # never appears. Only the deterministic rules can run this early — the
+    # subject_type / content_type judgements need the summary that doesn't
+    # exist yet — but those are most of the volume.
+    if pre_curate:
+        print("Curating before summarization (skips paying for what won't be printed)...")
+        # require_source matches what the document generators do, so the two
+        # agree on what will be printed. Every pipeline that passes --curate
+        # runs resolve_sources.py first, so an article with no link here is one
+        # no publication covered.
+        articles = curate(articles, require_source=True)
+        if not articles:
+            print("Nothing left to summarize after curation")
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump([], f)
+            return
+
     # Limit if specified
     if max_articles and max_articles < total_articles:
         print(f"Processing only first {max_articles} articles")
         articles = articles[:max_articles]
 
-    # Resume from previous run — load already-summarized articles by URL
+    # Resume from previous run — load already-summarized articles.
+    #
+    # The key falls back through url → source_url → title because an article is
+    # not guaranteed to have a `url`: keying on it alone meant anything without
+    # one was re-summarized on every re-run, silently paying twice for work
+    # already done.
+    def _resume_key(article: dict) -> str:
+        return (article.get('url') or article.get('source_url')
+                or article.get('title') or '').strip()
+
     already_done: dict = {}
     if os.path.exists(output_file):
         try:
             with open(output_file, 'r', encoding='utf-8') as f:
                 existing = json.load(f)
             for a in existing:
-                url = a.get('url', '')
-                if url and a.get('summary'):
-                    already_done[url] = a
+                key = _resume_key(a)
+                if key and a.get('summary'):
+                    already_done[key] = a
             if already_done:
                 print(f"  Resuming: {len(already_done)} articles already summarized, skipping them")
         except Exception:
             print("  Could not load existing progress, starting fresh")
 
-    remaining = [a for a in articles if a.get('url', '') not in already_done]
+    remaining = [a for a in articles if _resume_key(a) not in already_done]
     print(f"  Articles to process: {len(remaining)} (skipping {len(already_done)} already done)")
 
     # Estimate cost on remaining articles only
@@ -589,41 +654,63 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
             sys.exit(0)
 
     # Process articles — start with already-done ones so output file stays complete
-    print(f"\nProcessing {len(remaining)} articles...")
+    print(f"\nProcessing {len(remaining)} articles "
+          f"({MAX_WORKERS} at a time)...")
     summarized_articles = list(already_done.values())
 
     skipped_count = 0
     flagged = []          # articles whose figures never traced back to the source
-    for i, article in enumerate(remaining, 1):
-        print(f"[{i}/{len(remaining)}] {article.get('title', 'Untitled')[:60]}...")
+    started = time.time()
 
+    def process(article: dict) -> dict:
+        """
+        Fetch + summarize one article. Returns the article, mutated.
+
+        Everything this touches belongs to its own article, so it is safe to run
+        several at once; the shared bookkeeping (progress file, counters) happens
+        in the on_result callback below, which parallel_map serializes.
+        """
         url = article.get('url', '')
+        # The link the post points at, when it has one. Reading the article a
+        # tweet links to beats summarizing the tweet: the announcement itself
+        # has the figures, the investors and the product detail that a 200-
+        # character post leaves out — and it is what the report links to.
+        source = news_link(article)
+
+        content = ""
+        if source and not skip_fetch:
+            content = fetch_article_content(source)
+            if len(content) < 400:
+                # Paywall, JS-only page, or a redirect to a landing page. The
+                # captured post text is thin but true; a 3-line cookie banner
+                # is neither.
+                captured = article.get('content') or article.get('description') or ''
+                if captured:
+                    content = captured
+                    article['_note'] = 'source page thin — used post text'
+            else:
+                article['fetched_from'] = source
 
         # X.com/Twitter links can't be scraped. If the tweet text was already
         # captured at collection time (collect_x.py stores it in content/description),
         # summarize/score that text directly instead of fetching. Only fall back to
         # the old skip behavior when there is no captured text to work with.
-        content = ""
-        if is_x_twitter_link(url):
+        if content:
+            pass
+        elif is_x_twitter_link(url):
             captured = article.get('content') or article.get('description') or ''
             if captured:
                 content = captured
-                print(f"  (X/Twitter - using captured tweet text, no fetch)")
             else:
-                print(f"  (Skipping X/Twitter link - no captured text, using description)")
                 article['summary'] = article.get('description', article.get('title', ''))
                 article['full_content_fetched'] = False
                 article['skipped_x_twitter'] = True
-                summarized_articles.append(article)
-                skipped_count += 1
-                continue
+                return article
         # Fetch full content unless skip_fetch is True (non-X links only)
         elif not skip_fetch:
             if url:
                 content = fetch_article_content(url)
-                time.sleep(0.5)  # Rate limiting
 
-        # Generate summary
         result = generate_summary_claude(
             article.get('title', ''),
             article.get('description', ''),
@@ -633,30 +720,60 @@ def summarize_articles(input_file: str = '.tmp/classified_articles.json',
             categorize,
         )
 
-        # Add summary (and category/relevance if applicable) to article
         article['summary'] = result.get('summary', '')
         if consumer and 'category' in result:
             article['category'] = result['category']
-            print(f"  Category: {result['category']}")
         if categorize and 'category' in result:
             article['category'] = result['category']
             article['relevance'] = result.get('relevance', 3)
             article['vc_signal'] = result.get('vc_signal', 'other')
-            print(f"  [{result.get('relevance', 3)}/5] {result['category']} [{result.get('vc_signal', 'other')}]")
+            # Who the story is about and whether it is news at all. The document
+            # generators drop frontier_lab / big_tech / opinion — this is the
+            # judgement call the keyword filters at collection can't make.
+            article['subject_type'] = result.get('subject_type', 'other')
+            article['content_type'] = result.get('content_type', 'news')
         article['full_content_fetched'] = bool(content)
         if result.get('grounding_flags'):
             # Survived a repair attempt — keep it visible in the data so a
             # reviewer can check this article before the report goes out.
             article['grounding_flags'] = result['grounding_flags']
-            flagged.append((article.get('title', '')[:60], result['grounding_flags']))
+        return article
+
+    done_count = [0]
+
+    def record(index: int, article: dict, result: dict):
+        """Runs one at a time — safe to print and to write the progress file."""
+        nonlocal skipped_count
+        done_count[0] += 1
+        article = result if result is not None else article
+        title = article.get('title', 'Untitled')[:55]
+
+        if article.get('skipped_x_twitter'):
+            skipped_count += 1
+            note = ' (X link, no captured text — using description)'
+        elif article.get('_note'):
+            note = f" ({article.pop('_note')})"
+        elif categorize and 'relevance' in article:
+            note = (f" [{article.get('relevance', 3)}/5] {article.get('category', '')}"
+                    f" {article.get('subject_type', '')}/{article.get('content_type', '')}")
+        else:
+            note = ''
+        print(f"[{done_count[0]}/{len(remaining)}] {title}...{note}")
+
+        if article.get('grounding_flags'):
+            flagged.append((article.get('title', '')[:60], article['grounding_flags']))
         summarized_articles.append(article)
 
-        # Save after every article so a crash doesn't lose progress
+        # Save as results land so a crash doesn't lose the work already paid for
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(summarized_articles, f, ensure_ascii=False, indent=2)
 
-        if len(summarized_articles) % 10 == 0:
-            print(f"  → Summarized {len(summarized_articles)} articles so far...")
+    parallel_map(process, remaining, label='summarize', on_result=record)
+
+    elapsed = time.time() - started
+    if remaining:
+        print(f"\n  {len(remaining)} article(s) in {elapsed/60:.1f} min "
+              f"({elapsed/len(remaining):.1f}s each, {MAX_WORKERS} in parallel)")
 
     if skipped_count > 0:
         print(f"\n✓ Summarization complete ({len(summarized_articles)} articles, {skipped_count} X/Twitter links skipped)")
@@ -704,10 +821,15 @@ def main():
                         help='Disable AI news categorization (on by default). '
                              'Categorization classifies into 6 categories and scores relevance 1-5.')
     parser.set_defaults(categorize=True)
+    parser.add_argument('--curate', dest='pre_curate', action='store_true',
+                        help='Apply the news filters (frontier labs, opinion, statements, '
+                             'duplicates, missing source) BEFORE summarizing, so no LLM '
+                             'call is spent on an article the report will drop.')
     args = parser.parse_args()
 
     summarize_articles(args.input, args.output, args.max, args.skip_fetch,
-                       args.yes, args.language, args.consumer, args.categorize)
+                       args.yes, args.language, args.consumer, args.categorize,
+                       args.pre_curate)
 
 
 if __name__ == "__main__":

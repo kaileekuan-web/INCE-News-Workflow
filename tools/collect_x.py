@@ -23,6 +23,16 @@ server-side web search — see `--fallback`. X stays the primary source either
 way: the fallback searches for what the same accounts announced, and its items
 are labelled `X/Twitter (via Claude search)` so provenance is visible downstream.
 
+What this collector is FOR shapes what it keeps (see tools/news_filters.py):
+smaller AI startups, reporting real events. Posts about the companies listed in
+`frontier_labs.txt` and posts that are somebody's take rather than news are
+dropped here, where they cost nothing, instead of downstream where each one is
+an LLM call. `--include-frontier` / `--include-opinion` turn that off.
+
+Every post also carries `source_url`: the link the tweet points at, which is
+what reports hyperlink. The x.com URL is kept as `x_url` for provenance and is
+never rendered as a link.
+
 Output: .tmp/raw_x.json  (standard article schema, source='X/Twitter')
 """
 
@@ -38,6 +48,11 @@ from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.utils import clean_text, validate_date_range
+from tools.news_filters import (
+    is_ai_relevant, is_newsworthy, is_promo, is_opinion, has_hard_event,
+    extract_source_url, frontier_match, get_labs, news_link, dedupe,
+    _MONEY_RE,
+)
 
 try:
     import feedparser
@@ -83,62 +98,33 @@ MIN_TWEET_CHARS = 60
 # requests is the difference between ~80 posts and ~15 on a 30-account list.
 REQUEST_DELAY_SECONDS = float(os.getenv('X_REQUEST_DELAY', '2'))
 
+# Per-request timeout for a Nitter mirror. A healthy instance answers in about a
+# second; one that has not answered in eight is not going to. At the previous
+# 15s, a run where several mirrors were down spent minutes waiting on hosts that
+# were never going to reply — with six instances tried per account, that is the
+# slowest part of collection whenever the list has rotted.
+FETCH_TIMEOUT_SECONDS = float(os.getenv('X_FETCH_TIMEOUT', '8'))
+
 # ── Selectivity ───────────────────────────────────────────────────────────────
 # Every post kept here becomes an LLM call downstream, so filtering is a cost
-# control as much as a quality one. Three levels, set per section of
-# x_accounts.txt with `#filter: off | on | strict`:
+# control as much as a quality one. The vocabulary all four levels are built on
+# lives in tools/news_filters.py, shared with the document generators.
 #
-#   off    — keep everything (official lab/company accounts; already on-topic)
+# Levels are set per section of x_accounts.txt with
+# `#filter: off | on | strict | news`:
+#
+#   off    — keep everything (official company accounts; already on-topic)
 #   on     — must mention AI (founders and researchers, who also post personal
 #            takes, conference photos and jokes)
-#   strict — must mention AI AND read as news, not commentary (VCs, who post a
-#            high volume of opinion around a small amount of actual signal)
-FILTER_LEVELS = ('off', 'on', 'strict')
-
-AI_KEYWORDS = [
-    'ai', 'artificial intelligence', 'machine learning', 'gpt', 'llm',
-    'agent', 'model', 'openai', 'anthropic', 'claude', 'gemini', 'llama',
-    'mistral', 'neural', 'inference', 'training', 'gpu', 'diffusion',
-]
-
-# Words that mark a post as reporting something that happened, rather than
-# opining about it. Used by the `strict` level.
-NEWS_SIGNALS = [
-    # launches / releases
-    'launch', 'launching', 'launched', 'release', 'releasing', 'released',
-    'introduc', 'announc', 'unveil', 'ship', 'shipping', 'shipped',
-    'available', 'now live', 'rolling out', 'rolled out', 'general availability',
-    'open source', 'open-source', 'open sourcing', 'preview', 'beta',
-    # money
-    'raise', 'raised', 'raising', 'funding', 'round', 'seed', 'series a',
-    'series b', 'series c', 'valuation', 'acquir', 'acquisition', 'merger',
-    'ipo', 'invest', 'backed by', 'led by',
-    # company / people moves
-    'joining', 'joined', 'hiring', 'appointed', 'stepping down', 'partnership',
-    'partnering', 'collaborat', 'deal with', 'contract',
-    # results
-    'benchmark', 'state of the art', 'sota', 'outperform', 'record',
-    'results', 'paper', 'research', 'study', 'report',
-]
-
-# Pure calls-to-action carry no summarizable content even when long enough.
-PROMO_MARKERS = [
-    'link in bio', 'sign up', 'sign-up', 'register now', 'rsvp', 'join us',
-    'tickets', 'apply now', 'waitlist', 'giveaway', 'retweet to', 'follow us',
-    'subscribe', 'we are hiring', "we're hiring",
-]
-
-# AI keywords match as whole words (+ optional plural); news signals match at a
-# word start so they cover inflections. See _is_ai_relevant / _is_newsworthy.
-_AI_RE = re.compile(
-    r'\b(?:' + '|'.join(re.escape(k) for k in AI_KEYWORDS) + r')s?\b', re.I)
-_NEWS_RE = re.compile(
-    r'\b(?:' + '|'.join(re.escape(k) for k in NEWS_SIGNALS) + r')', re.I)
-
-# A concrete dollar figure is itself an event marker. Funding posts often skip
-# the verb entirely ("Base, Valar and Hadrian get $1B+ each"), which the
-# keyword list alone would read as commentary.
-_MONEY_RE = re.compile(r'[$€£]\s?\d[\d,.]*\s?(?:k|m|b|bn|mm|million|billion)?\+?\b', re.I)
+#   strict — must mention AI AND report an event, not comment on one (VCs, who
+#            post a high volume of opinion around a small amount of signal)
+#   news   — strict, plus no opinion markers at all ("my take", "hot take").
+#            The right level for a source that mixes reporting and punditry.
+#
+# Independent of level, two rules apply to every account (both defeatable with
+# a CLI flag): frontier labs and big tech are dropped, and posts carrying an
+# explicit opinion marker are dropped.
+FILTER_LEVELS = ('off', 'on', 'strict', 'news')
 
 _STATUS_RE = re.compile(r'(?:twitter\.com|x\.com|/)([A-Za-z0-9_]+)/status/(\d+)')
 _STRIP_URLS_RE = re.compile(r'https?://\S+')
@@ -234,7 +220,8 @@ def _fetch_feed(path: str, instances: list, failures: dict = None, max_failures:
         responded = False
         for user_agent in _USER_AGENTS:
             try:
-                resp = requests.get(url, headers={'User-Agent': user_agent}, timeout=15)
+                resp = requests.get(url, headers={'User-Agent': user_agent},
+                                    timeout=FETCH_TIMEOUT_SECONDS)
                 if resp.status_code != 200 or not resp.content:
                     continue
                 feed = feedparser.parse(resp.content)
@@ -245,6 +232,13 @@ def _fetch_feed(path: str, instances: list, failures: dict = None, max_failures:
                     return feed, base
                 if empty_feed is None and feed.feed and feed.feed.get('title'):
                     empty_feed, empty_base = feed, base
+            except (requests.Timeout, requests.ConnectionError):
+                # The host is unreachable or too slow. The second user agent
+                # exists for instances that answer but dislike a browser UA —
+                # it cannot help here, and retrying doubled the cost of every
+                # dead mirror. With six instances in the list that was the
+                # difference between 16 and 96 seconds of waiting per account.
+                break
             except Exception:
                 continue
 
@@ -273,49 +267,51 @@ def _entry_datetime(entry):
         return None
 
 
-def _is_ai_relevant(text: str) -> bool:
-    """
-    True if the post actually mentions AI.
-
-    Whole words only, plus an optional plural. Plain substring matching is
-    useless here: 'ai' alone hits "email", "said", "available" and "chair",
-    which would wave through most of a VC's timeline.
-    """
-    return bool(_AI_RE.search(text))
-
-
-def _is_newsworthy(text: str) -> bool:
-    """
-    True if the post reports an event rather than just commenting on one.
-
-    Matched at word start so "launch" catches "launches"/"launching" and
-    "introduc" catches "introducing" — but "round" no longer matches "around",
-    which was quietly passing pure commentary through the strict filter.
-    A concrete dollar figure counts as a signal on its own.
-    """
-    return bool(_NEWS_RE.search(text) or _MONEY_RE.search(text))
-
-
-def _is_promo(text: str) -> bool:
-    low = text.lower()
-    return any(k in low for k in PROMO_MARKERS)
-
-
-def passes_filter(text: str, level: str) -> tuple:
+def passes_filter(text: str, level: str, allow_opinion: bool = False,
+                  topic_assured: bool = False) -> tuple:
     """
     Decide whether a post survives its account's filter level.
 
     Returns (keep: bool, reason: str) — the reason drives the per-account
     rejection tally so a surprising drop in volume is explainable rather than
     silent.
+
+    The opinion check runs at every level including `off`: an official company
+    account posting "our take on why agents win" is still a take, and the report
+    is for news. Pass allow_opinion=True (CLI: --include-opinion) to keep them.
+
+    `topic_assured` skips the "must mention AI" test for items whose topic was
+    fixed by how they were found. It exists because that test has one bad false
+    negative: "Sierra raised a $350M Series C led by Greenoaks" never says AI,
+    and a funding round at an AI startup is the most valuable item this report
+    can carry. Claude web-search results answered an AI-specific query, so the
+    topic is already established; a raw timeline post has no such guarantee and
+    still has to say it.
     """
-    if _is_promo(text):
+    if is_promo(text):
         return False, 'promo'
+    if not allow_opinion:
+        opinionated, _ = is_opinion(text)
+        if opinionated:
+            return False, 'opinion'
     if level == 'off':
         return True, ''
-    if not _is_ai_relevant(text):
+    if not topic_assured and not is_ai_relevant(text):
+        # A funding round is the most valuable item this report can carry, and
+        # the wording of one routinely never says "AI": "Harvey raised a $300
+        # million Series E led by Kleiner Perkins" says what happened and not
+        # what the company does. Requiring the word here silently discarded
+        # exactly those posts.
+        #
+        # So a hard event with a real figure survives the topic test — and is
+        # marked, because a VC also posts non-AI rounds. `topic_unverified`
+        # travels with the article to the summarizer, which reads the full
+        # article and can answer "is this an AI company?" as a regex never
+        # could; anything it calls 非AI is dropped before the report.
+        if has_hard_event(text) and _MONEY_RE.search(text):
+            return True, 'topic-unverified'
         return False, 'not-ai'
-    if level == 'strict' and not _is_newsworthy(text):
+    if level in ('strict', 'news') and not is_newsworthy(text):
         return False, 'commentary'
     return True, ''
 
@@ -332,11 +328,19 @@ def _normalize_entry(entry, source_label: str, handle_hint: str = '') -> dict:
     if len(title) > 140:
         title = title[:137] + '...'
 
+    # The link the post points at — the actual news, as opposed to the tweet
+    # about it. Reports link here; the x.com URL below is kept only as
+    # provenance, and is never rendered as a link. Nitter's description carries
+    # the same links as the title but as HTML, so the title is enough.
+    source_url = extract_source_url(text)
+
     return {
         'source': source_label,
         'title': clean_text(title),
         'description': text,
         'url': url,
+        'source_url': source_url,   # the news behind the post ('' if it links nowhere)
+        'x_url': url,               # provenance only — never linked in the report
         'published_at': (dt.isoformat() + 'Z') if dt else '',
         'content': text,          # full tweet text — lets summarizer score without scraping x.com
         'author': f"@{handle}" if handle else '',
@@ -351,7 +355,8 @@ def _fingerprint(body: str) -> str:
 
 def collect_x(start_date: str, end_date: str, accounts_file: str,
               max_per_account: int = 8, fallback: str = 'auto',
-              min_posts: int = 20) -> list:
+              min_posts: int = 20, include_frontier: bool = False,
+              include_opinion: bool = False) -> list:
     """
     Collect X/Twitter posts, preferring Nitter RSS and falling back to Claude.
 
@@ -371,6 +376,14 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
     `search:` topic queries are always routed through Claude unless fallback is
     'never': public Nitter instances stopped serving search some time ago, so
     those lines were silently returning nothing on every run.
+
+    Two report-wide rules are applied here rather than downstream, because a
+    post dropped here is an LLM call not spent on it:
+
+        include_frontier=False (default) drops anything about a company in
+            frontier_labs.txt — the report is about smaller AI startups.
+        include_opinion=False (default) drops posts carrying an explicit
+            opinion marker at any filter level.
     """
     start_dt, end_dt = validate_date_range(start_date, end_date)
     # Include the whole end day.
@@ -394,10 +407,28 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
     # Hard-failure tally per instance, shared across every fetch in this run.
     instance_failures = {}
     # Why posts were dropped, aggregated across the whole run.
-    rejects = {'promo': 0, 'not-ai': 0, 'commentary': 0, 'too-short': 0,
-               'retweet': 0, 'duplicate': 0, 'over-cap': 0}
+    rejects = {'promo': 0, 'not-ai': 0, 'commentary': 0, 'opinion': 0,
+               'frontier': 0, 'too-short': 0, 'retweet': 0, 'duplicate': 0,
+               'over-cap': 0}
+    # Kept, not rejected: an event with a figure but no AI wording. Counted
+    # separately so it never reads as a rejection in the run log.
+    unverified = [0]
+    # Which companies the frontier filter removed, so the drop is explainable.
+    frontier_hits = {}
     # Posts kept per handle — drives which accounts the fallback chases.
     yielded = {}
+    labs = [] if include_frontier else get_labs()
+
+    def frontier_reject(article) -> bool:
+        """Drop (and tally) a post about a frontier lab / big tech company."""
+        if include_frontier:
+            return False
+        name, why = frontier_match(article, labs)
+        if not name:
+            return False
+        rejects['frontier'] += 1
+        frontier_hits[name] = frontier_hits.get(name, 0) + 1
+        return True
 
     def add_entries(feed, source_label, level, handle_hint='', cap=None):
         added = 0
@@ -422,9 +453,21 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
                 rejects['too-short'] += 1
                 continue
 
-            keep, reason = passes_filter(body, level)
+            keep, reason = passes_filter(body, level, allow_opinion=include_opinion)
             if not keep:
                 rejects[reason] += 1
+                continue
+            if reason == 'topic-unverified':
+                # Kept on the strength of its event, not its topic. The
+                # summarizer decides whether it is an AI company at all.
+                art['topic_unverified'] = True
+                unverified[0] += 1
+
+            # Frontier labs and big tech are out of scope for this report. The
+            # check runs on the whole article (author, linked domain, opening
+            # words), not just the body, so a lab's own account is caught even
+            # when the post text never names it.
+            if frontier_reject(art):
                 continue
 
             # Accounts often post the same announcement twice (a thread head and
@@ -495,6 +538,14 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
     dropped = ', '.join(f"{k}={v}" for k, v in rejects.items() if v)
     if dropped:
         print(f"  Filtered out: {dropped}")
+    if unverified[0]:
+        print(f"  Kept on event alone: {unverified[0]} post(s) report a funding "
+              f"event without saying AI — the summarizer checks whether the "
+              f"company is one")
+    if frontier_hits:
+        ranked = sorted(frontier_hits.items(), key=lambda kv: -kv[1])
+        print("  Frontier/big-tech coverage dropped: "
+              + ', '.join(f"{name} ({n})" for name, n in ranked))
 
     # ── Nitter health ─────────────────────────────────────────────────────────
     unserved = [h for h, s in account_status.items() if s == 'unserved']
@@ -506,10 +557,29 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
     if unserved:
         print(f"  Unserved: {', '.join('@' + h for h in unserved)}")
 
+    def finish(collected: list) -> list:
+        """
+        Last pass before the JSON is written: collapse duplicates across the
+        whole run and report how many posts carry a link to real coverage.
+
+        The per-account dedup above only catches identical wording. This one
+        also collapses two accounts linking to the same article and two
+        write-ups of the same event — see news_filters.dedupe.
+        """
+        unique, stats = dedupe(collected)
+        removed = ', '.join(f"{k}={v}" for k, v in stats.items() if v)
+        if removed:
+            print(f"  Cross-source dedup removed {len(collected) - len(unique)} "
+                  f"post(s): {removed}")
+        linked = sum(1 for a in unique if news_link(a))
+        print(f"  Source links: {linked}/{len(unique)} posts link to the news "
+              f"behind them (the rest render without a link — never to x.com)")
+        return unique
+
     if fallback == 'never':
         if unserved or len(articles) < min_posts:
             print("  Fallback disabled (--fallback never) — collecting Nitter results only")
-        return articles
+        return finish(articles)
 
     # ── Claude fallback ───────────────────────────────────────────────────────
     # Only chase accounts that actually came back with nothing. An account that
@@ -521,7 +591,7 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
     pending_searches = [q for q in searches if not search_hits.get(q)]
 
     if not run_accounts and not pending_searches:
-        return articles
+        return finish(articles)
 
     from tools.collect_x_claude import (
         collect_accounts_via_claude,
@@ -542,9 +612,14 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
             # Fallback items go through the same content filters as Nitter
             # posts, so a relaxed source can't smuggle promo or commentary past
             # the per-account selectivity levels.
-            keep, reason = passes_filter(body, level)
+            keep, reason = passes_filter(body, level, allow_opinion=include_opinion,
+                                         topic_assured=True)
             if not keep:
                 rejects[reason] += 1
+                continue
+            if reason == 'topic-unverified':
+                art['topic_unverified'] = True
+            if frontier_reject(art):
                 continue
             fingerprint = _fingerprint(body)
             if fingerprint in seen_texts:
@@ -575,7 +650,7 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
         kept = absorb(found, 'strict')
         print(f"  Fallback added {kept} post(s) [strict]")
 
-    return articles
+    return finish(articles)
 
 
 def main():
@@ -595,6 +670,13 @@ def main():
     parser.add_argument('--min-posts', type=int, default=20,
                         help='Below this many posts, --fallback auto treats the run as '
                              'degraded and calls Claude (default: 20)')
+    parser.add_argument('--include-frontier', action='store_true',
+                        help='Keep posts about the companies in frontier_labs.txt '
+                             '(OpenAI, Anthropic, big tech …). Off by default: this '
+                             'report is about smaller AI startups.')
+    parser.add_argument('--include-opinion', action='store_true',
+                        help="Keep posts carrying an opinion marker ('my take', "
+                             "'unpopular opinion' …). Off by default: the report is news.")
     args = parser.parse_args()
 
     load_dotenv(override=True)
@@ -607,7 +689,9 @@ def main():
 
     articles = collect_x(args.start_date, args.end_date, args.accounts,
                          max_per_account=args.max_per_account,
-                         fallback=args.fallback, min_posts=args.min_posts)
+                         fallback=args.fallback, min_posts=args.min_posts,
+                         include_frontier=args.include_frontier,
+                         include_opinion=args.include_opinion)
 
     os.makedirs(os.path.dirname(args.output), exist_ok=True)
     with open(args.output, 'w', encoding='utf-8') as f:
