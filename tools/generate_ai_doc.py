@@ -14,7 +14,13 @@ back with --include-frontier and is otherwise off — its classifier matches a
 keyword anywhere in the text, which would bucket a Cohere post under "OpenAI"
 for mentioning GPT.
 
-Output: one news table, followed by a fundraising table.
+The news section carries AI stories only, and never a funding round: rounds are
+the fundraising table's subject, reported there with named columns and wider
+sourcing. Links go to the primary source — the company's own launch post or the
+investor's announcement — and fall back to trade press only when no primary
+source exists (tools/news_filters.py, best_source_link).
+
+Output, in full: header → AI News Summary → fundraising table. Nothing else.
 Usage:
   python tools/generate_ai_doc.py --start_date 2026-03-31 --end_date 2026-04-09 \\
     --articles .tmp/summarized_articles.json [--chinese-only | --translate] \\
@@ -32,12 +38,21 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.utils import format_date_for_display, call_claude, translate_to_chinese_claude
-from tools.news_filters import curate, news_link
+from tools.news_filters import (
+    curate,
+    news_link,
+    clean_headline,
+    is_funding_story,
+    is_substantively_ai,
+    filter_news_section,
+)
 from tools.generate_word_doc import (
+    add_report_header,
     add_hyperlink,
     add_formatted_text,
     extract_funding_with_web_search,
     create_funding_table,
+    FUNDING_PASS_KEYS,
     convert_bullets_to_paragraph,
     set_run_font,
     _set_para_font,
@@ -77,9 +92,19 @@ FUNDRAISING_KEYWORDS = [
 ]
 
 
-def is_fundraising_article(_article: dict) -> bool:
-    """Disabled — all articles go to the main news table."""
-    return False
+def is_fundraising_article(article: dict) -> bool:
+    """
+    True when the story is a funding round, and so belongs in the fundraising
+    table rather than the news section.
+
+    The fundraising table reports the same round with its amount, stage,
+    valuation and investors in named columns, sourced and cross-checked. Running
+    it as prose in the news section as well is the identical fact twice, in the
+    worse of the two formats — so the news section drops it outright rather than
+    forwarding it. The table is built independently from the funding search,
+    which covers a wider set of sources than our collected articles do.
+    """
+    return is_funding_story(article)
 
 
 def article_to_funding_event(article: dict) -> dict:
@@ -277,7 +302,7 @@ def create_grouped_news_table(
     if chinese_only or translate:
         pending = []
         for article in articles:
-            title = article.get("title", "无标题")
+            title = clean_headline(article.get("title", "")) or "无标题"
             if not is_mostly_chinese(title):
                 pending.append(title)
             summary = convert_bullets_to_paragraph(
@@ -303,7 +328,10 @@ def create_grouped_news_table(
     heading = doc.add_heading("AI 新闻摘要", level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_para_font(heading)
-    doc.add_paragraph(f"共 {total} 篇\n")
+    # No "共 N 篇" line here: how many items the pipeline produced is a fact
+    # about the pipeline, not news. The count is still printed to the console
+    # during the run, where it is useful.
+    print(f"  News section: {total} item(s)")
 
     # Create 2-column table
     table = doc.add_table(rows=1, cols=2)
@@ -346,7 +374,10 @@ def create_grouped_news_table(
             summary_cell = row_cells[1]
             summary_para = summary_cell.paragraphs[0]
 
-            title = article.get("title", "无标题")
+            # Headlines collected from X arrive as the tweet — "@perplexity_ai:
+            # Today we're launching Projects…" — handle, hashtags, thread marker
+            # and all. clean_headline() reduces that to the sentence.
+            title = clean_headline(article.get("title", "")) or "无标题"
             # Translate title to Chinese when in chinese-only or translate mode
             if chinese_only or translate:
                 if is_mostly_chinese(title):
@@ -423,6 +454,8 @@ def generate_ai_doc(
     include_frontier: bool = False,
     include_opinion: bool = False,
     require_source: bool = True,
+    min_signal: int = 3,
+    funding_passes: list = None,
 ):
     load_dotenv(override=True)
 
@@ -442,18 +475,19 @@ def generate_ai_doc(
     articles = curate(articles, include_frontier, include_opinion,
                       require_source=require_source)
 
+    # The news section carries AI stories only, and never a funding round.
+    #
+    # Order matters: funding first, then AI relevance, then signal. A funding
+    # round is removed for being a funding round, not for scoring low, so the
+    # console tally names the reason a reader would give.
+    articles, off_topic = filter_news_section(
+        articles, no_funding=no_funding, min_signal=min_signal)
+
     if max_articles:
         articles = articles[:max_articles]
 
-    # Separate fundraising articles from regular news (unless disabled)
-    if no_funding:
-        regular_articles = articles
-        funding_articles = []
-    else:
-        regular_articles = [a for a in articles if not is_fundraising_article(a)]
-        funding_articles = [a for a in articles if is_fundraising_article(a)]
-        if funding_articles:
-            print(f"  Detected {len(funding_articles)} fundraising articles — moving to funding table")
+    regular_articles = articles
+    funding_articles = off_topic.get('funding', [])
 
     if translate:
         print("Translation enabled (Claude)")
@@ -485,21 +519,7 @@ def generate_ai_doc(
         if _attr in _rFonts.attrib:
             del _rFonts.attrib[_attr]
 
-    title_para = doc.add_heading("AI 资讯报告", level=0)
-    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_para_font(title_para)
-
-    subtitle = doc.add_paragraph(f"{start_date}  至  {end_date}")
-    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    for run in subtitle.runs:
-        set_run_font(run, font_size=14)
-        run.font.color.rgb = RGBColor(128, 128, 128)
-
-    total_str = str(len(regular_articles))
-    if not no_funding and funding_articles:
-        total_str += f"（另有 {len(funding_articles)} 篇移至融资动态）"
-    doc.add_paragraph(f"文章总数：{total_str}")
-    doc.add_paragraph("")
+    add_report_header(doc, start_date, end_date)
 
     print("Creating news table...")
     create_grouped_news_table(doc, regular_articles, chinese_only, translate,
@@ -518,7 +538,8 @@ def generate_ai_doc(
 
         print("Searching for AI funding news with Claude web search (day by day)...")
         if anthropic_key:
-            funding_events = extract_funding_with_web_search(anthropic_key, start_date, end_date)
+            funding_events = extract_funding_with_web_search(
+                anthropic_key, start_date, end_date, 'ai', funding_passes)
             all_funding = funding_events + wechat_funding
             print(f"  Found {len(funding_events)} from web search + {len(wechat_funding)} from WeChat")
             create_funding_table(doc, all_funding)
@@ -556,6 +577,16 @@ def main():
     parser.add_argument("--include-opinion", action="store_true",
                         help="Keep commentary, opinion pieces and executive statements. "
                              "Off by default: the news table is for reported events.")
+    parser.add_argument("--min-signal", type=int, default=3,
+                        help="Drop news items below this relevance score (1-5, "
+                             "assigned during summarization). Default 3, which "
+                             "cuts filler; pass 1 to keep everything.")
+    parser.add_argument("--funding-passes", default=None, metavar="KEYS",
+                        help="Comma-separated funding source passes to run "
+                             "(%s). Each is one web search per day, so all of "
+                             "them is days x 5 search turns. Default: all — "
+                             "fewer passes means missed rounds."
+                             % ",".join(FUNDING_PASS_KEYS))
     parser.add_argument("--allow-unlinked", dest="require_source",
                         action="store_false",
                         help="Keep articles with no link to published coverage, as "
@@ -577,6 +608,8 @@ def main():
         args.include_frontier,
         args.include_opinion,
         args.require_source,
+        args.min_signal,
+        [k for k in (args.funding_passes or "").split(",") if k.strip()] or None,
     )
 
 

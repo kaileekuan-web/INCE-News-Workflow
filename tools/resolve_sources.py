@@ -108,8 +108,13 @@ def _prompt(batch: list) -> str:
 
 What counts as a match:
 - The article reports the same event as the post — the same funding round, the same product launch, the same acquisition. An article about the same company at a different time is NOT a match.
-- Prefer, in this order: the company's own announcement or blog post, trade press covering it (TechCrunch, VentureBeat, Bloomberg, Reuters, The Information), then anything else credible.
 - Published around the post's date. A much older article is a different event.
+
+Which source to return — the primary one, always:
+- FIRST look for the announcement itself: the company's own blog post, /news or /press page, its press release (Business Wire, PR Newswire, GlobeNewswire), its research paper or model card, or the investor's own post about the round. That is what the report should link to.
+- Only if no primary source exists, return trade-press coverage (TechCrunch, The Verge, VentureBeat, Bloomberg, Reuters, The Information), and then anything else credible.
+- A TechCrunch writeup of a launch the company blogged about is the wrong answer when the blog post exists. Aggregator coverage is a report of the announcement; the report wants the announcement. Look for it before settling.
+- Deal databases (Crunchbase, PitchBook, Dealroom, Tracxn) are compiled from announcements and are never primary — use them to find the announcement, not as the link.
 
 Rules:
 - NEVER return an x.com, twitter.com or nitter URL. Those are the post itself, not coverage of it. If the only thing you can find is the post, return an empty url for that id.

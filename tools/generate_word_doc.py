@@ -34,7 +34,10 @@ from tools.utils import (
 )
 from tools.detect_funding import extract_funding_with_claude
 from tools.verify_emit import emit_funding_claims
-from tools.news_filters import curate, news_link
+from tools.news_filters import (
+    curate, news_link, is_aggregator, canonical_url, clean_headline,
+    filter_news_section, signal_score,
+)
 
 try:
     from docx import Document
@@ -298,10 +301,91 @@ FUNDING_EVENTS_SCHEMA = {
 }
 
 
-def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
+# One web search per day found the rounds one feed happened to carry, and
+# nothing else. The week of 2026-08-10 is the worked example: Echovane, Point2
+# Technology, Discovered Materials, River AI, Legio, Palette, CodeRabbit, Skan
+# AI, Yuno, Remepy, Silicon Data and Mindgard all announced inside the range and
+# none of them reached the table. Every one of them was public somewhere — a
+# database entry, a Form D, an investor's own post — just not in the one place
+# the single search looked.
+#
+# So the day is searched several times over, each pass pointed at a different
+# kind of source. They overlap heavily by design: a round that shows up in three
+# passes is a round three independent places agree on, and _merge_funding_events
+# collapses the copies into the entry with the most disclosed fields.
+FUNDING_SOURCE_PASSES = [
+    {
+        'key': 'primary',
+        'label': 'company & investor announcements',
+        'instruction': (
+            "Search the companies' OWN announcements and their investors' own posts: "
+            "company blogs, /news and /press pages, press releases on Business Wire, "
+            "PR Newswire, GlobeNewswire and EIN Presswire, and the announcement posts "
+            "VC firms publish about rounds they led (a16z, Sequoia, Index, Accel, "
+            "Benchmark, Lightspeed, General Catalyst, Khosla, Greylock, Bessemer, "
+            "First Round, Founders Fund, Kleiner Perkins, Insight, Y Combinator, "
+            "Antler, Seedcamp and their peers). These are the primary sources — "
+            "prefer them over anyone's coverage of them."
+        ),
+    },
+    {
+        'key': 'newsletters',
+        'label': 'venture deal newsletters',
+        'instruction': (
+            "Search the daily venture deal newsletters and their deal logs: Axios Pro "
+            "Rata, Fortune Term Sheet, StrictlyVC, PE Hub, Dan Primack's feed, "
+            "Newcomer, The Information's venture coverage. These carry the small "
+            "rounds trade press does not write up individually — read the deal lists "
+            "at the bottom of each issue, not only the lead story."
+        ),
+    },
+    {
+        'key': 'databases',
+        'label': 'funding databases',
+        'instruction': (
+            "Search the funding databases and their news arms: Crunchbase News and "
+            "Crunchbase's daily funding roundups, PitchBook news, Dealroom, Tracxn, "
+            "CB Insights. Use their per-day funding listings, which are compiled "
+            "rather than reported and so include rounds nobody wrote an article about."
+        ),
+    },
+    {
+        'key': 'filings',
+        'label': 'regulatory filings',
+        'instruction': (
+            "Search regulatory filings for rounds disclosed by filing rather than by "
+            "announcement: SEC Form D filings on EDGAR (Rule 506 offerings), and the "
+            "equivalent registries elsewhere. A Form D filed on the date is a "
+            "disclosed round even when no publication covered it — report it, with "
+            "the filing as the source, and mark undisclosed fields \"Not disclosed\" "
+            "rather than inferring them."
+        ),
+    },
+    {
+        'key': 'trade',
+        'label': 'trade press',
+        'instruction': (
+            "Search the trade press funding desks: TechCrunch's funding and venture "
+            "tags, VentureBeat, Sifted, Tech.eu, EU-Startups, FinSMEs, Business "
+            "Insider, Reuters, Bloomberg, Fortune, and the regional outlets (Calcalist "
+            "and Globes for Israel, Nikkei and TechNode for Asia, LatamList for Latin "
+            "America). Include non-English coverage."
+        ),
+    },
+]
+
+FUNDING_PASS_KEYS = [p['key'] for p in FUNDING_SOURCE_PASSES]
+
+
+def _search_funding_single_day(api_key: str, date: str, topic: str,
+                               source_pass: dict = None) -> list:
     """
     Search for funding events on a single date using Claude's server-side web
     search tool. Returns list of funding event dicts.
+
+    `source_pass` is one entry from FUNDING_SOURCE_PASSES — the kind of source
+    this pass should look in. None searches broadly, which is what the self-test
+    and any direct caller get.
 
     api_key is accepted for call-site compatibility and ignored — the Anthropic
     client reads ANTHROPIC_API_KEY from the environment.
@@ -321,9 +405,24 @@ def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
             "blockchain/crypto and conventional fintech."
         )
 
+    if source_pass:
+        where = (f"Where to search (this pass covers {source_pass['label']} only):\n"
+                 f"{source_pass['instruction']}\n\n"
+                 "Other passes cover the other kinds of source, so search this kind "
+                 "thoroughly rather than broadly. Small rounds count as much as large "
+                 "ones: a $3M seed nobody wrote an article about is exactly what this "
+                 "pass exists to find. Do not skip a round for being minor, for being "
+                 "outside the US, or for having only one source.")
+    else:
+        where = ("Search TechCrunch, Reuters, Bloomberg, Fortune, VentureBeat, "
+                 "Crunchbase News, Sifted, Axios Pro Rata, The Information, SEC Form D "
+                 "filings, and official company press releases/blogs.")
+
     prompt = f"""Task: Find {sector} fundraising announcements that were FIRST publicly announced on {date}.
 
-Search TechCrunch, Reuters, Bloomberg, Fortune, VentureBeat, Crunchbase News, Sifted, Axios Pro, The Information, and official company press releases/blogs. Consolidate duplicate reports of the same funding round into a single entry.
+{where}
+
+Consolidate duplicate reports of the same funding round into a single entry.
 
 Requirements:
 - Use {date} as the filtering criterion. Include only funding rounds that were FIRST publicly announced on that date.
@@ -338,6 +437,8 @@ Requirements:
 
 Verification:
 - Verify each round against at least two reputable sources whenever they exist, and list every URL you used in "sources", primary first.
+- "Primary" means the announcement itself — the company's own blog post, press release or /news page, or the lead investor's own post about the round. Put that URL in "url" and first in "sources". Use a trade-press or database writeup as "url" only when no primary source exists. A round that a company announced on its own blog should not be sourced to a summary of that blog post.
+- One credible source is enough to REPORT a round; two are for confirming its details. Do not drop a round because you found only the filing, only the database entry, or only the investor's post — report it with what that source states and "Not disclosed" for the rest.
 - If sources conflict (amount, stage, investors), still report the round using the most authoritative source, and describe the conflict in "discrepancy", naming the sources.
 - If a detail is not publicly disclosed, write exactly "Not disclosed". Never estimate, and never carry a figure over from a different round.
 - "Not disclosed" means no source states it — not that you did not look. If a source names the round (Seed, Series A/B/C) or the lead investor, report it. Read the sources you already found before falling back to "Not disclosed" on stage or investors.
@@ -351,12 +452,20 @@ Language:
 
 Return one object per distinct funding round."""
 
+    pass_key = source_pass['key'] if source_pass else 'broad'
     result = call_claude_search(prompt, schema=FUNDING_EVENTS_SCHEMA,
-                                label=f"funding search {date}")
+                                label=f"funding search {date} [{pass_key}]")
     if not result:
         return []
     events = result.get('events')
-    return events if isinstance(events, list) else []
+    if not isinstance(events, list):
+        return []
+    # Stamp the pass onto each event so the merge can report how many
+    # independent kinds of source found the same round.
+    for event in events:
+        if isinstance(event, dict):
+            event['_passes'] = [pass_key]
+    return events
 
 
 def _filter_ai_funding_events(events: list) -> list:
@@ -517,6 +626,15 @@ def _consolidate(a: dict, b: dict) -> dict:
     merged['sources'] = _merge_sources(winner, loser)
     if not (merged.get('discrepancy') or '').strip():
         merged['discrepancy'] = loser.get('discrepancy', '') or ''
+
+    # Which source passes found this round, unioned — the corroboration count.
+    passes = []
+    for e in (a, b):
+        for key in (e.get('_passes') or []):
+            if key not in passes:
+                passes.append(key)
+    if passes:
+        merged['_passes'] = passes
     return merged
 
 
@@ -533,7 +651,7 @@ def _is_disclosed(value) -> bool:
 
 def _disclosed_count(event: dict) -> int:
     return sum(1 for k, v in event.items()
-               if k not in ('sources', 'discrepancy') and _is_disclosed(v))
+               if k not in ('sources', 'discrepancy', '_passes') and _is_disclosed(v))
 
 
 def _merge_sources(*events) -> list:
@@ -550,11 +668,51 @@ def _merge_sources(*events) -> list:
     return out
 
 
+def _prefer_primary_source(event: dict) -> dict:
+    """
+    Reorder a round's sources so the announcement itself comes first, and point
+    `url` at it.
+
+    The company's own post and the investor's own post are the round; TechCrunch
+    and Crunchbase are reports of it. When both are in hand the table should link
+    to the former — the numbers are first-hand there, it is rarely paywalled, and
+    it is the thing every writeup is downstream of. When only coverage exists,
+    nothing changes: an aggregator link is still a source.
+    """
+    sources = _merge_sources(event)
+    if not sources:
+        return event
+
+    seen, ordered = set(), []
+    for url in sources:
+        key = canonical_url(url)
+        if key in seen:
+            continue
+        seen.add(key)
+        ordered.append(url)
+
+    # Stable partition, not a sort by rank — within each group the model's own
+    # ordering is the best signal available about which source it trusted.
+    primary = [u for u in ordered if not is_aggregator(u)]
+    secondary = [u for u in ordered if is_aggregator(u)]
+
+    out = dict(event)
+    out['sources'] = primary + secondary
+    out['url'] = out['sources'][0]
+    return out
+
+
 def extract_funding_with_web_search(api_key: str, start_date: str, end_date: str,
-                                    topic: str = 'ai') -> list:
+                                    topic: str = 'ai', passes: list = None) -> list:
     """
     Use Claude with server-side web search to find funding events in a date range.
-    Searches day-by-day to avoid the model skipping dates in long ranges.
+
+    Searches day-by-day — the model skips dates in long ranges — and each day
+    several times over, once per entry in FUNDING_SOURCE_PASSES. See the comment
+    there for why: one pass finds the rounds one kind of source happened to
+    carry, and the rounds it misses are not random. They are the small ones, the
+    non-US ones, and the ones announced by filing or by an investor's blog post
+    rather than by an article.
 
     Args:
         api_key: Unused, kept for call-site compatibility (the Anthropic client
@@ -562,6 +720,9 @@ def extract_funding_with_web_search(api_key: str, start_date: str, end_date: str
         start_date: YYYY-MM-DD start date
         end_date: YYYY-MM-DD end date
         topic: 'ai' (default) or 'deeptech'
+        passes: source-pass keys to run (see FUNDING_PASS_KEYS). None runs all
+                of them, which is days × 5 search turns — the cost of not
+                missing rounds. Pass a subset to trade coverage for spend.
 
     Returns:
         List of funding event dicts with keys: date, company, summary, stage, raise, valuation, investors
@@ -574,30 +735,61 @@ def extract_funding_with_web_search(api_key: str, start_date: str, end_date: str
     total_days = (end_dt - start_dt).days + 1
     days = [(start_dt + timedelta(days=n)).strftime("%Y-%m-%d")
             for n in range(total_days)]
-    print(f"  Searching {total_days} day(s): {start_date} to {end_date} "
-          f"({MAX_WORKERS} at a time)")
 
-    # One web-search turn per day, run concurrently. Sequentially this was the
-    # single slowest step in the pipeline — a fortnight's range meant 14 search
-    # turns of 30-60s each, back to back, for 7-15 minutes of waiting.
-    # The days are independent, so the only thing the old loop bought was order,
-    # which parallel_map preserves anyway.
+    selected = FUNDING_SOURCE_PASSES
+    if passes:
+        wanted = {p.strip().lower() for p in passes}
+        selected = [p for p in FUNDING_SOURCE_PASSES if p['key'] in wanted]
+        unknown = wanted - set(FUNDING_PASS_KEYS)
+        if unknown:
+            print(f"  WARNING: unknown funding pass(es) {sorted(unknown)} — "
+                  f"known passes are {FUNDING_PASS_KEYS}")
+        if not selected:
+            selected = FUNDING_SOURCE_PASSES
+
+    # Every (day, source pass) combination is one search turn, and they are all
+    # independent — so the whole grid goes through parallel_map at once rather
+    # than a day's passes waiting on each other.
+    tasks = [(day, source_pass) for day in days for source_pass in selected]
+    print(f"  Searching {total_days} day(s) × {len(selected)} source pass(es) "
+          f"= {len(tasks)} search turns: {start_date} to {end_date} "
+          f"({MAX_WORKERS} at a time)")
+    print(f"    Passes: {', '.join(p['label'] for p in selected)}")
+
     done = [0]
 
-    def _report(_i, date_str, events):
+    def _report(_i, task, events):
         done[0] += 1
-        print(f"  [{done[0]}/{total_days}] {date_str}: {len(events or [])} event(s)")
+        day, source_pass = task
+        print(f"  [{done[0]}/{len(tasks)}] {day} [{source_pass['key']}]: "
+              f"{len(events or [])} event(s)")
 
-    per_day = parallel_map(
-        lambda date_str: _search_funding_single_day(api_key, date_str, topic),
-        days, label='funding search', on_result=_report)
+    per_task = parallel_map(
+        lambda task: _search_funding_single_day(api_key, task[0], topic, task[1]),
+        tasks, label='funding search', on_result=_report)
 
     all_events = []
-    for events in per_day:
+    for events in per_task:
         all_events.extend(events or [])
 
     unique = _merge_funding_events(all_events, [])
-    print(f"  Total unique funding events: {len(unique)}")
+    print(f"  {len(all_events)} result(s) across all passes → "
+          f"{len(unique)} unique funding event(s)")
+
+    # Cross-check: how many independent kinds of source found each round. One is
+    # not a reason to drop it — a Form D nobody wrote about is still a round —
+    # but a table where most rows are single-source is a signal that the passes
+    # are not overlapping, which is how the misses happened last time.
+    single = [e for e in unique if len(e.get('_passes') or []) < 2]
+    if unique:
+        print(f"  Corroboration: {len(unique) - len(single)}/{len(unique)} "
+              f"confirmed by 2+ source kinds")
+        if single:
+            names = ', '.join(e.get('company', '?') for e in single[:8])
+            print(f"    Single-source: {names}"
+                  + (' …' if len(single) > 8 else ''))
+
+    unique = [_prefer_primary_source(e) for e in unique]
 
     # Drop events outside the requested date range — a web search often returns
     # historical results regardless of the date specified.
@@ -700,25 +892,60 @@ def add_executive_summary_section(doc, summary_text: str):
     doc.add_paragraph('')
 
 
-def _funding_priority(event: dict) -> tuple:
-    """Return (label, fill_hex) for VC prioritization based on funding stage.
+# ── Report header ─────────────────────────────────────────────────────────────
 
-    Early-stage rounds are highest priority because there is still room to invest
-    at a reasonable valuation. Later-stage / IPO events are informational only.
+REPORT_TITLE = 'AI 新闻简报'
+
+
+def _format_range(start_date: str, end_date: str) -> str:
+    """'2026年8月10日 – 2026年8月14日' from two ISO dates.
+
+    Falls back to the raw strings if either fails to parse, so a malformed
+    --start_date shows up in the header rather than crashing the run.
     """
-    stage = (event.get('stage') or '').lower().strip()
-    if any(k in stage for k in ('seed', 'pre', 'angel', 'a轮', 'series a', '天使', '种子')):
-        return ('重点关注', 'F4CCCC')   # light red — early stage, act fast
-    if any(k in stage for k in ('series b', 'b轮', 'b+')):
-        return ('值得关注', 'FFF2CC')   # light yellow — still interesting
-    if not _is_disclosed(stage):
-        return ('值得关注', 'FFF2CC')   # light yellow — unknown, worth checking
-    return ('一般了解', 'F3F3F3')       # light gray — Series C+, IPO, acquisition
+    try:
+        start = datetime.strptime(start_date, '%Y-%m-%d')
+        end = datetime.strptime(end_date, '%Y-%m-%d')
+    except ValueError:
+        return f'{start_date} – {end_date}'
+
+    fmt = '{d.year}年{m}月{day}日'
+    return (fmt.format(d=start, m=start.month, day=start.day) + ' – '
+            + fmt.format(d=end, m=end.month, day=end.day))
+
+
+def add_report_header(doc: Document, start_date: str, end_date: str,
+                      title: str = None):
+    """
+    The masthead: a title and the period it covers, and nothing else.
+
+    Deliberately free of the run's bookkeeping — article counts, generation
+    timestamps, source tallies. Those are facts about the pipeline, and a reader
+    opening a news digest should meet the news, not its build log.
+
+    Shared by both AI report generators so the two layouts open the same way.
+    """
+    title_para = doc.add_heading(title or REPORT_TITLE, level=0)
+    title_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _set_para_font(title_para)
+
+    subtitle = doc.add_paragraph(_format_range(start_date, end_date))
+    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    for run in subtitle.runs:
+        set_run_font(run, font_size=12)
+        run.font.color.rgb = RGBColor(110, 110, 110)
+
+    doc.add_paragraph('')
 
 
 def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI 融资动态'):
     """
-    Add Fundraising News section with a 7-column table (all Chinese).
+    Add the fundraising section: a 7-column table, and nothing under it.
+
+    The old 优先级 column is gone. It was a stage lookup dressed as editorial
+    judgement — "seed → 重点关注" is a rule the reader can apply from the 轮次
+    column they are already reading, and printing it as a verdict gave a lookup
+    table the authority of a recommendation.
 
     Args:
         doc: Document object
@@ -734,19 +961,19 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
         _set_para_font(doc.add_paragraph('该时间段内未发现融资事件。'))
         return
 
-    _set_para_font(doc.add_paragraph(f'共 {len(funding_events)} 条融资记录\n'))
-
-    # Create table with 8 columns (added 优先级 after company)
-    table = doc.add_table(rows=1, cols=8)
+    # Column widths reallocate the 0.7" the priority column used to take: the
+    # summary carries the source links under it and was the tightest cell.
+    table = doc.add_table(rows=1, cols=7)
     table.style = 'Light Grid Accent 1'
 
-    col_widths = [Inches(0.65), Inches(0.85), Inches(0.7), Inches(1.4), Inches(0.55), Inches(0.6), Inches(0.6), Inches(1.2)]
+    col_widths = [Inches(0.65), Inches(0.9), Inches(1.95), Inches(0.6),
+                  Inches(0.65), Inches(0.65), Inches(1.1)]
     for i, width in enumerate(col_widths):
         table.columns[i].width = width
     _set_table_cell_margins(table)
 
     # Header row (Chinese)
-    headers = ['日期', '公司', '优先级', '概述', '轮次', '融资额', '估值', '投资方']
+    headers = ['日期', '公司', '概述', '轮次', '融资额', '估值', '投资方']
     header_cells = table.rows[0].cells
     for i, h_text in enumerate(headers):
         header_cells[i].text = h_text
@@ -781,23 +1008,33 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
             run = company_para.add_run(company)
             set_run_font(run, font_size=9)
 
-        # Col 2: priority label (no background colour)
-        label, _ = _funding_priority(event)
-        priority_run = row_cells[2].paragraphs[0].add_run(label)
-        priority_run.bold = True
-        set_run_font(priority_run, font_size=9)
-
-        # Col 3: Chinese summary, followed by the corroborating source links.
+        # Col 2: Chinese summary, followed by the corroborating source links.
         # The sources belong next to the claim they support rather than in a
-        # column of their own — a ninth column on letter paper leaves each one
+        # column of their own — an eighth column on letter paper leaves each one
         # too narrow to read.
-        summary_para = row_cells[3].paragraphs[0]
+        summary_para = row_cells[2].paragraphs[0]
         summary_run = summary_para.add_run(str(event.get('summary', 'Not disclosed')))
         set_run_font(summary_run, font_size=9)
 
+        # A conflict between sources is reported in the row it belongs to, not
+        # in a block under the table. Silently picking one figure would present
+        # a contested number as settled fact, and a footnote at the bottom of
+        # the section is read by nobody looking at the row it qualifies.
+        note = (event.get('discrepancy') or '').strip()
+        if note:
+            note_para = row_cells[2].add_paragraph()
+            note_para.paragraph_format.space_before = Pt(2)
+            flag_run = note_para.add_run('来源存在出入：')
+            flag_run.bold = True
+            set_run_font(flag_run, font_size=8)
+            flag_run.font.color.rgb = RGBColor(89, 89, 89)
+            note_run = note_para.add_run(note)
+            set_run_font(note_run, font_size=8)
+            note_run.font.color.rgb = RGBColor(89, 89, 89)
+
         sources = _merge_sources(event)
         if sources:
-            src_para = row_cells[3].add_paragraph()
+            src_para = row_cells[2].add_paragraph()
             src_para.paragraph_format.space_before = Pt(2)
             label_run = src_para.add_run('来源 ')
             set_run_font(label_run, font_size=8)
@@ -809,37 +1046,17 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
                     sep.font.color.rgb = RGBColor(120, 120, 120)
                 add_hyperlink(src_para, src, f'[{n}] {_source_label(src)}', font_size=8)
 
-        # Cols 4-7: remaining fields
+        # Cols 3-6: remaining fields
         remaining = [
             event.get('stage', 'Not disclosed'),
             event.get('raise', 'Not disclosed'),
             event.get('valuation', 'Not disclosed'),
             event.get('investors', 'Not disclosed'),
         ]
-        for i, val in enumerate(remaining, start=4):
+        for i, val in enumerate(remaining, start=3):
             para = row_cells[i].paragraphs[0]
             run = para.add_run(str(val))
             set_run_font(run, font_size=9)
-
-    # Conflicts between sources go under the table, named. Silently picking one
-    # figure would present a contested number as settled fact.
-    conflicts = [(e.get('company', ''), (e.get('discrepancy') or '').strip())
-                 for e in funding_events if (e.get('discrepancy') or '').strip()]
-    if conflicts:
-        note_heading = doc.add_paragraph()
-        note_heading.paragraph_format.space_before = Pt(6)
-        run = note_heading.add_run('来源存在出入的条目：')
-        run.bold = True
-        set_run_font(run, font_size=9)
-        for company, note in conflicts:
-            para = doc.add_paragraph()
-            para.paragraph_format.space_after = Pt(2)
-            name_run = para.add_run(f'{company}: ')
-            name_run.bold = True
-            set_run_font(name_run, font_size=9)
-            note_run = para.add_run(note)
-            set_run_font(note_run, font_size=9)
-            note_run.font.color.rgb = RGBColor(89, 89, 89)
 
 
 def _source_label(url: str) -> str:
@@ -995,7 +1212,7 @@ def create_grouped_deeptech_table(
     h = doc.add_heading(heading, level=1)
     h.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_para_font(h)
-    doc.add_paragraph(f'共 {total} 篇\n')
+    print(f"  News section: {total} item(s)")
 
     table = doc.add_table(rows=1, cols=2)
     table.style = 'Light Grid Accent 1'
@@ -1091,8 +1308,6 @@ def create_watchlist_section(doc: Document, articles: list,
     h.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_para_font(h)
 
-    intro = doc.add_paragraph(f'共 {len(articles)} 篇提及关注公司的文章\n')
-    _set_para_font(intro)
 
     table = doc.add_table(rows=1, cols=3)
     table.style = 'Light Grid Accent 1'
@@ -1156,7 +1371,9 @@ def translate_cached(text: str) -> str:
 
 def _fill_summary_cell(cell, article: dict, translate: bool, chinese_only: bool):
     """Fill the summary cell: hyperlinked title + body paragraph(s) with proper spacing."""
-    title = article.get('title', '无标题')
+    # Headlines collected from X arrive as the tweet — handle, hashtags, thread
+    # marker and the ellipsis where the post ran out of characters.
+    title = clean_headline(article.get('title', '')) or '无标题'
     # The news behind the post, never the post itself — an x.com link is
     # provenance, not a source. Falls back to an unlinked headline.
     url = news_link(article)
@@ -1246,7 +1463,9 @@ def create_news_table(doc: Document, articles: list, max_articles: int = None,
     heading = doc.add_heading('AI 新闻摘要', level=1)
     heading.alignment = WD_ALIGN_PARAGRAPH.LEFT
     _set_para_font(heading)
-    doc.add_paragraph(f'共 {len(articles)} 篇\n')
+    # No "共 N 篇" line: how many items the pipeline produced is a fact about the
+    # pipeline, not news. The count still goes to the console during the run.
+    print(f"  News section: {len(articles)} item(s)")
 
     is_categorized = any('category' in a for a in articles)
 
@@ -1321,11 +1540,13 @@ def generate_word_doc(start_date: str, end_date: str,
                       output_prefix: str = 'AI_News',
                       funding_topic: str = 'ai',
                       doc_title: str = None,
-                      min_signal: int = 1,
+                      min_signal: int = 3,
                       watchlist_file: str = 'watchlist.txt',
                       include_frontier: bool = False,
                       include_opinion: bool = False,
-                      require_source: bool = True):
+                      require_source: bool = True,
+                      funding_passes: list = None,
+                      watchlist_section: bool = False):
     """
     Main document generation function
 
@@ -1361,13 +1582,19 @@ def generate_word_doc(start_date: str, end_date: str,
                       dedupe_only=(funding_topic != 'ai'),
                       require_source=require_source)
 
-    # Drop articles below the requested relevance threshold before building the doc.
-    # Scores were assigned during summarization (1=low value, 5=must-read VC signal).
-    # Default is 1 (keep everything); pass --min-signal 3 to cut noise for a tighter brief.
-    # Articles that have no 'relevance' field (e.g. from an older run) default to 3.
-    if min_signal > 1:
+    # The AI news section carries AI stories only, and never a funding round —
+    # rounds are the fundraising table's subject, with better columns and wider
+    # sourcing. This also applies the relevance floor (--min-signal), so the
+    # tally names one reason per article instead of two filters reporting
+    # separately. See filter_news_section() in news_filters.py.
+    #
+    # The deeptech report is out of scope: "no funding rounds, must be AI" is
+    # the AI brief's editorial line, not a property of every report built here.
+    if funding_topic == 'ai':
+        articles, _off_topic = filter_news_section(articles, min_signal=min_signal)
+    elif min_signal > 1:
         before = len(articles)
-        articles = [a for a in articles if a.get('relevance', 3) >= min_signal]
+        articles = [a for a in articles if signal_score(a) >= min_signal]
         print(f"Signal filter (>= {min_signal}): keeping {len(articles)}/{before} articles")
 
     # Load the watchlist of investment-target company names (edit watchlist.txt to configure).
@@ -1396,34 +1623,16 @@ def generate_word_doc(start_date: str, end_date: str,
     section.top_margin = Inches(1.0)
     section.bottom_margin = Inches(1.0)
 
-    # Title
-    display_title = doc_title if doc_title else 'AI 资讯报告'
-    title = doc.add_heading(display_title, level=0)
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_para_font(title)
+    # Header: title and date range, nothing else. The generation timestamp and
+    # 文章总数 line that used to sit here were build metadata printed as if they
+    # were the lead.
+    add_report_header(doc, start_date, end_date, doc_title)
 
-    # Subtitle with date range
-    subtitle = doc.add_paragraph(f'{start_date} 至 {end_date}')
-    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    for run in subtitle.runs:
-        set_run_font(run, font_size=14)
-        run.font.color.rgb = RGBColor(128, 128, 128)
-
-    # Compact metadata line
-    meta_para = doc.add_paragraph()
-    meta_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    meta_run = meta_para.add_run(
-        f'生成时间：{datetime.now().strftime("%Y-%m-%d %H:%M")}  ·  '
-        f'文章总数：{len(articles)}'
-    )
-    set_run_font(meta_run, font_size=9)
-    meta_run.font.color.rgb = RGBColor(140, 140, 140)
-
-    _add_horizontal_rule(doc)
-
-    # Watchlist highlights: scan every article for tracked company names and surface
-    # matches at the top of the doc before the main news table. The '_watchlist_matches'
-    # field is only used for debugging — it isn't rendered in the Word output.
+    # Watchlist: the matches are reported on the console, not as a section in the
+    # document. The AI report's structure is header → news → fundraising and
+    # nothing else, and a second news table above the first one competing for the
+    # top of the page is the thing that rule exists to prevent. Pass
+    # --watchlist-section to put it back.
     if watchlist:
         watchlist_hits = []
         for article in articles:
@@ -1432,9 +1641,13 @@ def generate_word_doc(start_date: str, end_date: str,
                 article['_watchlist_matches'] = matches
                 watchlist_hits.append(article)
         if watchlist_hits:
-            print(f"Watchlist: {len(watchlist_hits)} article(s) matched")
-            create_watchlist_section(doc, watchlist_hits, translate, chinese_only)
-            _add_horizontal_rule(doc)
+            names = sorted({co for a in watchlist_hits
+                            for co in a['_watchlist_matches']})
+            print(f"Watchlist: {len(watchlist_hits)} article(s) matched "
+                  f"({', '.join(names)})")
+            if watchlist_section:
+                create_watchlist_section(doc, watchlist_hits, translate, chinese_only)
+                _add_horizontal_rule(doc)
         else:
             print("Watchlist: no matches found this period")
 
@@ -1462,7 +1675,8 @@ def generate_word_doc(start_date: str, end_date: str,
 
     if anthropic_key:
         print(f"Supplementing with {topic_label} funding web search (Claude)...")
-        web_events = extract_funding_with_web_search(anthropic_key, start_date, end_date, funding_topic)
+        web_events = extract_funding_with_web_search(
+            anthropic_key, start_date, end_date, funding_topic, funding_passes)
         all_funding_events = _merge_funding_events(all_funding_events, web_events)
         print(f"  Total after merge: {len(all_funding_events)} funding events")
     elif not all_funding_events:
@@ -1498,7 +1712,7 @@ def main():
     parser.add_argument('--funding-topic', choices=['ai', 'deeptech'], default='ai',
                         help='Funding search topic: ai (default) or deeptech')
     parser.add_argument('--doc-title', default=None, help='Document title (default: AI News Report)')
-    parser.add_argument('--min-signal', type=int, default=1, metavar='N',
+    parser.add_argument('--min-signal', type=int, default=3, metavar='N',
                         help='Minimum relevance score 1-5 to include in news table (default: 1 = all). '
                              'Use 3 to drop low-value articles, 4 for high-signal-only.')
     parser.add_argument('--watchlist', default='watchlist.txt', metavar='FILE',
@@ -1511,6 +1725,17 @@ def main():
     parser.add_argument('--include-opinion', action='store_true',
                         help='Keep commentary, opinion pieces and executive statements. '
                              'Off by default: the news table is for reported events.')
+    parser.add_argument('--watchlist-section', action='store_true',
+                        help='Render the watchlist companies as their own section '
+                             'above the news table. Off by default: the report is '
+                             'header, news, fundraising and nothing else. Matches '
+                             'are reported on the console either way.')
+    parser.add_argument('--funding-passes', default=None, metavar='KEYS',
+                        help='Comma-separated funding source passes to run '
+                             '(%s). Each is one web search per day, so all of '
+                             'them is days x 5 search turns. Default: all — '
+                             'fewer passes means missed rounds.'
+                             % ','.join(FUNDING_PASS_KEYS))
     parser.add_argument('--allow-unlinked', dest='require_source',
                         action='store_false',
                         help='Keep articles with no link to published coverage, as '
@@ -1534,6 +1759,8 @@ def main():
         args.include_frontier,
         args.include_opinion,
         args.require_source,
+        [k for k in (args.funding_passes or '').split(',') if k.strip()] or None,
+        args.watchlist_section,
     )
 
 

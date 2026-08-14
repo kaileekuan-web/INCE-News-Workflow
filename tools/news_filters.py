@@ -625,14 +625,349 @@ def news_link(article: dict) -> str:
     Order: the source link extracted at collection time, then the article's own
     URL if it isn't an X link, then '' — which renders as an unlinked headline
     rather than a link back to X.
+
+    Prefers a primary source over an aggregator when the article carries both —
+    see best_source_link(), which this delegates to. Kept as the name every
+    caller already uses.
     """
-    source = (article.get('source_url') or '').strip()
-    if source and not is_x_url(source):
-        return source
-    url = (article.get('url') or '').strip()
-    if url and not is_x_url(url):
-        return url
-    return ''
+    return best_source_link(article)
+
+
+# ── Primary sources over aggregators ──────────────────────────────────────────
+
+# News aggregators and syndicators: sites that report on someone else's
+# announcement. They are perfectly good sources, but when the company's own
+# launch post or the investor's own announcement exists, that is what the report
+# should link to — the aggregator's writeup is a summary of it, one hop further
+# from the facts, and often paywalled or rewritten.
+#
+# This is a de-prioritization, not a ban: an aggregator link is still used when
+# it is the only link there is. A story no primary source covers is still a
+# story.
+AGGREGATOR_HOSTS = (
+    # tech trade press
+    'techcrunch.com', 'theverge.com', 'venturebeat.com', 'engadget.com',
+    'arstechnica.com', 'wired.com', 'zdnet.com', 'cnet.com', 'gizmodo.com',
+    'thenextweb.com', 'mashable.com', 'techradar.com', 'digitaltrends.com',
+    'siliconangle.com', 'protocol.com', 'axios.com', 'theinformation.com',
+    'businessinsider.com', 'forbes.com', 'fortune.com', 'cnbc.com',
+    'bloomberg.com', 'reuters.com', 'ft.com', 'wsj.com', 'nytimes.com',
+    'sifted.eu', 'tech.eu', 'eu-startups.com', 'finsmes.com',
+    'semafor.com', 'theregister.com', 'calcalistech.com', 'globes.co.il',
+    'technode.com', 'nikkei.com',
+    # deal databases: compiled from announcements, so never the announcement
+    'crunchbase.com', 'pitchbook.com', 'dealroom.co', 'tracxn.com',
+    'cbinsights.com', 'owler.com',
+    # newsletters / link blogs / community aggregators
+    'tldr.tech', 'news.ycombinator.com', 'reddit.com', 'medium.com',
+    'substack.com', 'analyticsindiamag.com', 'marktechpost.com',
+    'the-decoder.com', 'aibusiness.com', 'artificialintelligence-news.com',
+    'cryptobriefing.com', 'coindesk.com', 'cointelegraph.com',
+    # Chinese aggregators
+    '36kr.com', 'jiqizhixin.com', 'qbitai.com', 'ithome.com', 'sina.com.cn',
+)
+
+# Path fragments that mark a URL as an official announcement even on a host we
+# don't recognise — a company blog lives on the company's own domain, and that
+# domain is different for every company, so the shape of the path is the only
+# general signal available.
+_PRIMARY_PATH_HINTS = (
+    '/blog', '/news', '/newsroom', '/press', '/press-release', '/pressroom',
+    '/announcement', '/announcing', '/updates', '/research', '/posts',
+)
+
+
+def is_aggregator(url: str) -> bool:
+    """True for a news site reporting on someone else's announcement."""
+    host = _host(url)
+    if not host:
+        return False
+    host = host[4:] if host.startswith('www.') else host
+    return any(host == h or host.endswith('.' + h) for h in AGGREGATOR_HOSTS)
+
+
+def is_primary_source(url: str) -> bool:
+    """
+    True when `url` looks like the announcement itself rather than coverage of
+    it: a company or investor domain, ideally on a blog/news/press path.
+
+    Deliberately loose. The report's rule is "prefer the primary source when one
+    exists", so a false negative here costs an aggregator link that was going to
+    be used anyway, while the check being strict enough to reject TechCrunch is
+    what actually matters.
+    """
+    if not url or is_x_url(url) or is_aggregator(url):
+        return False
+    return True
+
+
+def _source_candidates(article: dict) -> list:
+    """Every non-X URL this article offers, in the order it recorded them."""
+    raw = []
+    for key in ('source_url', 'primary_url', 'url'):
+        raw.append(article.get(key) or '')
+    extra = article.get('sources') or []
+    if isinstance(extra, str):
+        extra = [extra]
+    raw.extend(extra)
+
+    out, seen = [], set()
+    for candidate in raw:
+        candidate = (candidate or '').strip()
+        if not candidate or is_x_url(candidate):
+            continue
+        key = canonical_url(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(candidate)
+    return out
+
+
+def best_source_link(article: dict) -> str:
+    """
+    The URL a report should link to, primary source first.
+
+    Ranking: an official announcement on a blog/news/press path, then any other
+    non-aggregator domain, then an aggregator, then ''. An x.com link is never
+    returned — it is provenance, not a source.
+    """
+    candidates = _source_candidates(article)
+    if not candidates:
+        return ''
+
+    def rank(url: str) -> int:
+        if not is_primary_source(url):
+            return 2                                    # aggregator writeup
+        path = (urlsplit(url).path or '').lower()
+        if any(hint in path for hint in _PRIMARY_PATH_HINTS):
+            return 0                                    # official announcement
+        return 1                                        # company domain, other page
+
+    # min() over a stable list keeps the recorded order as the tiebreak, so an
+    # article whose links are all the same rank links where it always did.
+    return min(candidates, key=rank)
+
+
+# ── Headlines ─────────────────────────────────────────────────────────────────
+
+# A headline collected from X arrives as the tweet: an @handle, hashtags, a
+# thread marker, and an ellipsis where the post ran out of characters. None of
+# that belongs in a news digest, and stripping it is the difference between a
+# report that reads as edited and one that reads as a screenshot of a timeline.
+_TWEET_HANDLE_PREFIX_RE = re.compile(r'^\s*(?:RT\s+)?@[A-Za-z0-9_]{1,15}\s*[:：]\s*')
+_HANDLE_INLINE_RE = re.compile(r'(?<![A-Za-z0-9_/])@([A-Za-z0-9_]{2,15})\b')
+_HASHTAG_RE = re.compile(r'(?<![A-Za-z0-9_])#[^\s#，。,.]{1,40}')
+_THREAD_MARKER_RE = re.compile(
+    r'(?:🧵|👇|⬇️?|\bthread\b|\ba\s+thread\b)\s*:?', re.I)
+# "1/", "1/7", "(2/9)" — thread pagination, at either end of the headline.
+_THREAD_INDEX_RE = re.compile(
+    r'(?:^\s*\(?\d{1,2}\s*/\s*\d{0,2}\)?\s*[:.\-–—]?\s*)'
+    r'|(?:\s*\(?\d{1,2}\s*/\s*\d{0,2}\)?\s*$)')
+# Truncation the collector left behind: "…", "...", and the "$..." that a
+# clipped dollar figure decays into.
+_TRUNCATION_RE = re.compile(r'\s*(?:[$＄]\s*)?(?:…+|\.{3,}|。{2,})\s*$')
+_EMOJI_RE = re.compile(
+    '[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F000-\U0001F2FF️‍]+')
+
+
+def clean_headline(title: str) -> str:
+    """
+    Turn a collected headline into one a news digest can print.
+
+    Removes the @handle the post was authored by, inline @mentions, hashtags,
+    thread markers ("🧵", "1/7", "👇"), decorative emoji, and the trailing
+    ellipsis left by X's character limit. An inline @mention becomes the bare
+    name — "@perplexity_ai" is Perplexity, and dropping it entirely would lose
+    the subject of the sentence.
+
+    Falls back to the original string if cleaning would empty it: a headline
+    that is nothing but a handle and an emoji is still better than a blank cell.
+    """
+    if not title:
+        return ''
+
+    text = _TWEET_HANDLE_PREFIX_RE.sub('', title)
+    text = _THREAD_INDEX_RE.sub('', text)
+    text = _THREAD_MARKER_RE.sub(' ', text)
+    text = _HASHTAG_RE.sub(' ', text)
+    text = _HANDLE_INLINE_RE.sub(r'\1', text)
+    text = _EMOJI_RE.sub(' ', text)
+    text = _TRUNCATION_RE.sub('', text)
+
+    # Collapse the whitespace the substitutions above left behind, and tidy the
+    # punctuation that ends up stranded at the edges.
+    text = re.sub(r'\s+', ' ', text).strip()
+    text = text.strip('"“”‘’ ')
+    text = re.sub(r'^[\-–—:：,，.。]+\s*', '', text)
+    text = re.sub(r'\s*[,，:：\-–—]+$', '', text).strip()
+
+    return text or title.strip()
+
+
+# ── Funding stories ───────────────────────────────────────────────────────────
+
+# A funding round is reported in the fundraising table, with its amount, stage,
+# valuation and investors in named columns. The same round retold as a prose
+# summary in the news section is the identical fact, twice, in a worse format —
+# so the news section drops it.
+_FUNDING_EVENT_RE = _phrase_re([
+    # Round names. These are unambiguous on their own.
+    'funding round', 'seed round', 'pre-seed', 'preseed', 'seed funding',
+    'series a', 'series b', 'series c', 'series d', 'series e', 'series f',
+    'growth round', 'bridge round', 'venture round',
+    # The round as an event.
+    'led the round', 'co-led by', 'oversubscribed', 'raised an undisclosed',
+    'raises an undisclosed', 'closes funding', 'closed funding',
+    'secures funding', 'secured funding', 'raises funding',
+    'funding at a valuation', 'post-money', 'pre-money',
+    'at a valuation of', 'now valued at',
+    'emerges from stealth with', 'out of stealth with',
+    # Bare 'raised' is deliberately absent — "MoK raised throughput 40%" is a
+    # kernel benchmark, and it was moving model releases into the funding
+    # bucket. A raise without a round name still matches _FUNDING_MONEY_RE
+    # below, which requires the verb and a figure together.
+])
+_FUNDING_EVENT_ZH_RE = re.compile(
+    '|'.join(re.escape(k) for k in (
+        # 估值 and 参投 are deliberately absent: a VC describing its accelerator's
+        # terms uses both, and that is a programme, not a round.
+        '融资', '轮融资', '领投', '跟投', '天使轮', '种子轮', 'Pre-A轮',
+        '战略投资', '超额认购',
+    )))
+# "raised $50M", "closes $12 million" — the verb and the figure together, which
+# catches phrasings the vocabulary above spells differently.
+_FUNDING_MONEY_RE = re.compile(
+    r'\b(?:rais\w+|secur\w+|clos\w+|land\w+|bag\w+|nab\w+|net\w+|pull\w+ in|'
+    r'walk\w+ away with|announc\w+)\b[^.。\n]{0,40}?'
+    r'[$€£]\s?\d[\d,.]*\s?(?:k|m|b|bn|mm|million|billion)?', re.I)
+
+
+def is_funding_story(article: dict) -> bool:
+    """
+    True when the article's subject is a funding round, acquisition or IPO.
+
+    Checked against the headline and summary rather than the full body: an
+    article about a product launch routinely mentions that the company "raised
+    $30M last year", and matching on the body would move that launch out of the
+    news section over a background clause.
+    """
+    if (article.get('content_type') or '').lower() in ('funding', 'fundraising'):
+        return True
+
+    text = ' '.join([
+        article.get('title') or '',
+        article.get('source_title') or '',
+        article.get('summary') or article.get('description') or '',
+    ])
+    if not text.strip():
+        return False
+
+    if _FUNDING_EVENT_RE.search(text) or _FUNDING_EVENT_ZH_RE.search(text):
+        return True
+    return bool(_FUNDING_MONEY_RE.search(text))
+
+
+# ── News section scope ────────────────────────────────────────────────────────
+
+# The summarizer sorts every article into one of these after reading the whole
+# thing (SUMMARY_PROMPT_AI in summarize_articles.py). These are the news the AI
+# News Summary exists to carry.
+SUBSTANTIVE_CATEGORIES = {
+    '模型与研究',    # model releases, research, benchmarks
+    '产品与应用',    # product launches and features
+    '政策与安全',    # policy, regulation, safety
+    '行业动态',      # partnerships, strategy, market moves
+    '大科技公司',    # big tech — only reaches here with --include-frontier
+}
+
+# NON_AI_CATEGORY ('非AI') is the summarizer's explicit not-about-AI verdict, and
+# curate() already drops it. '其他' is "AI-adjacent but none of the above" — the
+# filler bucket, and the one the report is meant to cut.
+TANGENTIAL_CATEGORIES = {NON_AI_CATEGORY, '其他'}
+
+
+def is_substantively_ai(article: dict) -> bool:
+    """
+    True when the story is actually about AI — a model or product release,
+    research result, partnership, or policy development — rather than something
+    AI-adjacent that filled a slot.
+
+    The judgement is the summarizer's `category`, not a keyword match, because
+    the summarizer read the whole article and a keyword match reads a headline.
+    That distinction is not academic: "Today we're launching Projects, an
+    evolution of Spaces" is a Perplexity product launch with no AI term in it,
+    and a keyword gate drops it while keeping any funding post that says "AI" in
+    passing.
+
+    Articles with no category — added by hand, or summarized before the field
+    existed — fall back to the keyword test rather than being trusted blindly.
+    """
+    category = (article.get('category') or '').strip()
+    if category in TANGENTIAL_CATEGORIES:
+        return False
+    if category in SUBSTANTIVE_CATEGORIES:
+        return True
+
+    text = ' '.join([
+        article.get('title') or '',
+        article.get('source_title') or '',
+        article.get('summary') or article.get('description') or '',
+        article.get('content') or '',
+    ])
+    return is_ai_relevant(text)
+
+
+def signal_score(article: dict, default: int = 3) -> int:
+    """The summarizer's 1-5 relevance score, as an int.
+
+    Stored as a string by summarize_articles.py and absent entirely on articles
+    from older runs, so both are normalized here rather than at each call site.
+    """
+    try:
+        return int(str(article.get('relevance', default)).strip()[:1])
+    except (ValueError, IndexError):
+        return default
+
+
+def filter_news_section(articles: list, no_funding: bool = False,
+                        min_signal: int = 3) -> tuple:
+    """
+    Reduce the curated articles to what the AI News Summary should carry.
+
+    Three rules, applied in this order so the reported reason is the one a
+    reader would give:
+
+      1. **No funding rounds.** They are the fundraising table's subject, with
+         better columns and wider sourcing. Skipped when `no_funding` is set and
+         there is no table to move them to.
+      2. **Substantively about AI.** A launch, a model, a research result, a
+         partnership, a policy development — not a company with "AI" in its
+         boilerplate.
+      3. **Above the signal floor.** The summarizer's 1-5 relevance score; 3 and
+         up by default, which is what cuts filler.
+
+    Returns (kept, removed_by_reason). Both AI report generators call this, so
+    the two layouts stay one editorial line rather than two that drift.
+    """
+    kept, removed = [], {'funding': [], 'not AI': [], 'low signal': []}
+
+    for article in articles:
+        if not no_funding and is_funding_story(article):
+            removed['funding'].append(article)
+        elif not is_substantively_ai(article):
+            removed['not AI'].append(article)
+        elif signal_score(article) < min_signal:
+            removed['low signal'].append(article)
+        else:
+            kept.append(article)
+
+    detail = ', '.join(f"{name} ({len(items)})"
+                       for name, items in removed.items() if items)
+    if detail:
+        print(f"  News section scope: removed {detail}")
+    print(f"  News section: {len(kept)} article(s)")
+    return kept, removed
 
 
 # ── Deduplication ─────────────────────────────────────────────────────────────
@@ -1165,6 +1500,61 @@ def _test():
     check('canonical strips tracking',
           canonical_url('https://WWW.News.site/a/?utm_source=x&id=7#top'),
           'https://news.site/a?id=7')
+
+    # Primary sources over aggregators
+    check('techcrunch is an aggregator',
+          is_aggregator('https://techcrunch.com/2026/08/11/acme-raises/'), True)
+    check('company blog is not',
+          is_aggregator('https://acme.ai/blog/series-a'), False)
+    check('prefers company blog over techcrunch',
+          best_source_link({'url': 'https://techcrunch.com/2026/08/11/acme/',
+                            'source_url': 'https://acme.ai/blog/launch'}),
+          'https://acme.ai/blog/launch')
+    check('prefers announcement path over bare company page',
+          best_source_link({'source_url': 'https://acme.ai/product',
+                            'sources': ['https://acme.ai/blog/launch']}),
+          'https://acme.ai/blog/launch')
+    check('aggregator kept when it is all there is',
+          best_source_link({'source_url': 'https://techcrunch.com/2026/08/11/acme/'}),
+          'https://techcrunch.com/2026/08/11/acme/')
+    check('x links never returned',
+          best_source_link({'url': 'https://x.com/a/status/1',
+                            'sources': ['https://twitter.com/b/status/2']}), '')
+
+    # Headlines
+    check('strips handle prefix',
+          clean_headline("@perplexity_ai: Today we're launching Projects…"),
+          "Today we're launching Projects")
+    check('strips RT prefix and hashtag',
+          clean_headline('RT @acme: Acme ships v2 #AI #startups'), 'Acme ships v2')
+    check('strips thread markers',
+          clean_headline('1/7 Acme raises a Series A 🧵👇'), 'Acme raises a Series A')
+    check('keeps inline mention as a name',
+          clean_headline('@acme partners with @stripe on payments'),
+          'acme partners with stripe on payments')
+    check('strips clipped dollar figure',
+          clean_headline('Simile closes a round of $...'), 'Simile closes a round of')
+    check('clean headline left alone',
+          clean_headline('Mistral releases Large 3'), 'Mistral releases Large 3')
+    check('never returns empty', clean_headline('🧵👇'), '🧵👇')
+
+    # Funding stories belong in the fundraising table, not the news section
+    check('seed round is funding',
+          is_funding_story({'title': 'Ellis emerges from stealth with $10M seed round'}),
+          True)
+    check('series b is funding',
+          is_funding_story({'title': 'Simile raises $200M Series B at $2B valuation'}),
+          True)
+    check('chinese funding',
+          is_funding_story({'title': 'Zenity 完成 1.25 亿美元 C 轮融资，由 Norwest 领投'}),
+          True)
+    check('product launch is not funding',
+          is_funding_story({'title': 'Perplexity launches Projects',
+                            'summary': 'Projects are hubs for ongoing work.'}), False)
+    check('launch mentioning a past raise is not funding',
+          is_funding_story({'title': 'Acme ships its coding agent',
+                            'summary': 'Acme, a team led by a former Google '
+                                       'engineer, shipped the agent today.'}), False)
 
     # Dedup
     same_url = [

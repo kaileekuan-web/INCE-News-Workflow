@@ -1,7 +1,15 @@
 # Collect AI News (Bi-Weekly)
 
 ## Objective
-Collect AI-related news from X/Twitter (the only source), summarize and translate to Chinese using Claude, and output a formatted Word document with two sections: (1) AI News table and (2) AI Fundraising News table sourced from a live Claude web search.
+Collect AI-related news from X/Twitter (the only source), summarize and translate to Chinese using Claude, and output a formatted Word document.
+
+**The document has exactly three parts, in this order, and nothing else:**
+
+1. **Header** — report title and the date range. No article counts, no generation timestamp, no source tallies. Those are facts about the pipeline, not news, and a reader opening a digest should meet the news first.
+2. **AI News Summary** — AI stories only, and never a funding round.
+3. **AI Fundraising table** — every round in the range, sourced as close to the announcement as possible.
+
+Nothing sits below the fundraising table. Source-conflict notes that used to print there now appear in the row they qualify.
 
 ## Editorial rules (what belongs in the news table)
 These four rules are enforced in code (`tools/news_filters.py`), at collection and again at document generation. They define the report:
@@ -13,6 +21,11 @@ These four rules are enforced in code (`tools/news_filters.py`), at collection a
    - The exception that keeps this from eating the report: an item that carries a **hard event** stays, even when it arrives as a quote. "Sierra's CEO said the company raised $350M" is a funding round being reported through a quote.
 3. **No duplicates.** Four kinds are caught: the same link (in any spelling — http/https, www/m/amp, tracking parameters), identical wording, two wordings that still overlap heavily, and the case word overlap can't see — the company's announcement and the press write-up of it, which share the story's *names and figures* while sharing few words. Dedup runs three times: at collection, again after source resolution (which can reveal that two posts point at one article), and once more at document generation. The richest copy survives.
 4. **Every entry links to a published article, never to X.** Most announcement tweets link nowhere, so `tools/resolve_sources.py` searches for the article covering the same event and **verifies it against the post** before accepting it. What still has no article after that is dropped from the news table (`--allow-unlinked` keeps it as an unlinked headline). The x.com URL is kept in the JSON as `x_url` for provenance only.
+
+5. **No funding rounds in the news section.** A round is the fundraising table's subject, reported there with amount, stage, valuation and investors in named columns and cross-checked across five kinds of source. The same round retold as prose in the news section is the identical fact twice, in the worse of the two formats. `is_funding_story()` catches it on the headline and summary — deliberately not the body, because a launch story routinely mentions that the company "raised $30M last year".
+6. **Primary sources over aggregators.** The report links to the announcement itself — the company's own blog, `/news` or `/press` page, its press release, or the lead investor's own post — and falls back to trade press only when no primary source exists. TechCrunch's writeup of a launch the company blogged about is one hop further from the facts, often paywalled, and downstream of the thing we could have linked to. Deal databases (Crunchbase, PitchBook, Dealroom, Tracxn) are compiled from announcements and are **never** primary. Enforced in `best_source_link()` and `AGGREGATOR_HOSTS` (`news_filters.py`), in the source-resolution prompt (`resolve_sources.py`), and in the funding search's own instructions.
+
+**What "substantively about AI" means (news section):** the summarizer's `category` decides, not a keyword match — it read the whole article and a keyword match reads a headline. `模型与研究`, `产品与应用`, `政策与安全`, `行业动态` and `大科技公司` are in; `非AI` and `其他` (the filler bucket) are out. This matters: "Today we're launching Projects, an evolution of Spaces" is a Perplexity product launch containing no AI term at all, and a keyword gate drops it while happily keeping a funding post that says "AI" in passing.
 
 Escape hatches: `--include-frontier`, `--include-opinion` and `--allow-unlinked` on the document generators (`collect_x.py` takes the first two). Rules 1 and 2 are also configurable without code: edit `frontier_labs.txt` to let a company back in.
 
@@ -42,8 +55,8 @@ Escape hatches: `--include-frontier`, `--include-opinion` and `--allow-unlinked`
 5. `tools/resolve_sources.py` - find and verify the published article behind a link-less post
    - Self-tests for the funding consolidation live in the document generator: `python tools/generate_word_doc.py --self-test`
 6. `tools/summarize_articles.py` - Fetch full content and generate summaries via Claude
-7. `tools/generate_word_doc.py` - Word document generation with translation and funding section
-8. `tools/generate_ai_doc.py` - the AI news doc the webapp builds (same rules, different layout)
+7. `tools/generate_word_doc.py` - Word document generation with translation and funding section. Also hosts the shared pieces both generators use: `add_report_header()`, `create_funding_table()`, `FUNDING_SOURCE_PASSES` and the funding search
+8. `tools/generate_ai_doc.py` - the AI news doc the webapp builds (same rules, different layout). Both generators now share one header, one funding table and one editorial line — `filter_news_section()` lives in `news_filters.py` precisely so the two can't drift apart
 9. `tools/utils.py` - Shared utilities (imported by other tools; also hosts the `call_claude` / `translate_to_chinese_claude` / `get_claude_client` helpers)
 
 ## Steps
@@ -143,36 +156,52 @@ Escape hatches: `--include-frontier`, `--include-opinion` and `--allow-unlinked`
      News table: 37 article(s) about smaller AI startups
      ```
      It runs here as well as at collection because this is the last point where every article is in one place — hand-added items, WeChat articles and anything collected before these rules existed all pass through it, and only here are `subject_type` / `content_type` available
-   - **Section 0 — Watchlist Highlights** (optional, appears if `watchlist.txt` has entries):
-     - Lists any articles mentioning companies in `watchlist.txt`, sorted by relevance
-     - Edit `watchlist.txt` (one company per line) to track investment targets
-   - **Section 1 — AI News table** (3 columns when categorized):
-     - **Date** | **优先级 (1-5)** | **Summary**: hyperlinked title + VC signal badge + Chinese/English paragraphs
-     - VC signal badges: `[融资]` `[产品]` `[合作]` `[人事]` `[监管]` `[研究]` — colored by type
-     - Articles grouped by category, sorted by relevance (highest first) within each group
-     - Filter low-signal noise: `--min-signal 3` drops relevance 1-2 articles
-   - **Section 2 — AI Fundraising News table** (8 columns):
-     - Columns: Date | Company | 优先级 | 概述 (+ source links) | Stage | Raise | Valuation | Investors
+   - **Header** — title and date range only. The `生成时间 · 文章总数` metadata line and the `共 N 篇` count under each heading are gone: they were build output printed as if they were the lead. Both counts still print to the console during the run, where they are useful.
+   - **Watchlist** — matches are reported on the console (`Watchlist: 4 article(s) matched (Harvey, Sierra)`), not rendered as a section. A second news table above the first one competes for the top of the page, and the report's structure is header → news → fundraising and nothing else. Pass `--watchlist-section` to put it back.
+   - **Section 1 — AI News Summary**:
+     - **Scope, applied in this order** (`filter_news_section()` in `news_filters.py`, shared by both generators so the two layouts can't drift): funding rounds out → not substantively AI out → below `--min-signal` out. The console names one reason per dropped article: `News section scope: removed funding (25), low signal (3)`
+     - `--min-signal` **defaults to 3** on both generators now (it was 1 on `generate_word_doc.py`), which is what cuts filler. Pass `--min-signal 1` to keep everything
+     - **Headlines are cleaned before rendering** (`clean_headline()`): the `@handle:` prefix, inline `@mentions`, hashtags, thread markers (`🧵`, `👇`, `1/7`), decorative emoji and the trailing `…`/`$...` left by X's character limit. `@perplexity_ai: Today we're launching Projects…` renders as `Today we're launching Projects`. Without this the report reads like a screenshot of a timeline
+     - **Links go to the primary source** — see editorial rule 6
+     - `generate_word_doc.py` renders Date | 优先级 (1-5) | Summary grouped by category with VC signal badges (`[融资]` `[产品]` `[合作]` `[人事]` `[监管]` `[研究]`); `generate_ai_doc.py` renders a flat Date | Summary table, oldest first
+   - **Section 2 — AI Fundraising News table** (7 columns):
+     - Columns: Date | Company | 概述 (+ source links) | Stage | Raise | Valuation | Investors
+     - **The 优先级 column is gone.** It was a stage lookup dressed as editorial judgement — "seed → 重点关注" is a rule the reader can apply from the 轮次 column they are already reading, and printing it as a verdict gave a lookup table the authority of a recommendation
      - **Primary source**: Claude extracts structured funding events from collected posts
-     - **Supplemental source**: Claude with the server-side `web_search` tool, **one search turn per day in the range** so the announcement date is exact (skipped entirely if `ANTHROPIC_API_KEY` is unset)
+     - **Supplemental source**: Claude with the server-side `web_search` tool, **one search turn per day per source pass** so the announcement date is exact (skipped entirely if `ANTHROPIC_API_KEY` is unset)
+     - **Five source passes per day, not one** (`FUNDING_SOURCE_PASSES` in `generate_word_doc.py`). One search per day found the rounds one feed happened to carry, and the rounds it missed were not random — they were the small ones, the non-US ones, and the ones announced by filing or by an investor's blog post rather than by an article. Each pass searches a different kind of source, and they overlap by design:
+
+       | Pass | Looks in |
+       |---|---|
+       | `primary` | Company blogs, `/news` and `/press` pages, Business Wire / PR Newswire / GlobeNewswire, and VC firms' own posts about rounds they led |
+       | `newsletters` | Axios Pro Rata, Fortune Term Sheet, StrictlyVC, PE Hub, Newcomer — **including the deal lists at the bottom of each issue**, which is where small rounds live |
+       | `databases` | Crunchbase News daily roundups, PitchBook, Dealroom, Tracxn, CB Insights — compiled rather than reported, so they include rounds nobody wrote an article about |
+       | `filings` | SEC Form D on EDGAR and equivalent registries. A Form D filed on the date is a disclosed round even when no publication covered it |
+       | `trade` | TechCrunch funding/venture tags, VentureBeat, Sifted, Tech.eu, EU-Startups, FinSMEs, Reuters, Bloomberg, plus regional outlets (Calcalist, Globes, Nikkei, TechNode, LatamList) |
+
+     - **Cross-check**: `_merge_funding_events()` collapses copies of one round into the entry with the most disclosed fields, and the run prints how many rounds two or more *kinds* of source agreed on: `Corroboration: 14/19 confirmed by 2+ source kinds`, naming the single-source ones. A single source is **not** a reason to drop a round — a Form D nobody wrote about is still a round — but a table that is mostly single-source means the passes aren't overlapping, which is how rounds got missed before
+     - **Sourcing stays close to the announcement**: `_prefer_primary_source()` reorders each row's links so the company's or investor's own post is first and becomes the row's hyperlink; aggregators fall to the back
+     - `--funding-passes primary,newsletters,databases` runs a subset. **Fewer passes means missed rounds** — this is a cost lever, not a tuning knob
      - **The search works to a brief** (`_search_funding_single_day` in `generate_word_doc.py`):
-       - Searches TechCrunch, Reuters, Bloomberg, Fortune, VentureBeat, Crunchbase News, Sifted, Axios Pro, The Information and company press releases/blogs
        - Includes a round only if it was **first publicly announced** on that date — not the publication date of a recap or later coverage
        - Excludes rounds from other dates, recaps of earlier rounds, unicorn lists, funding roundups, market/trend pieces, rumours and unconfirmed reports. **A day with nothing returns nothing** — substituting a nearby date silently widens the report's range
        - Verifies against two reputable sources where they exist and lists every URL used; conflicts go in `discrepancy` rather than being resolved silently
        - `"Not disclosed"` is the convention for anything no source states — **and only that**. Without the second half of that instruction the model marked stage and lead investor unknown on rounds whose own source named both
+       - **One credible source is enough to report a round**; two are for confirming its details. A round found only in a filing, only in a database, or only in the investor's post is reported with what that source states and `"Not disclosed"` for the rest. The old "verify against two sources" instruction, read strictly, dropped exactly the small rounds the extra passes exist to find
        - Chinese summaries: 2-3 sentences, professional, with varied openings (product, technology, market, the round, use of funds) instead of "这是一家…"
-     - **Rendering**: source links appear under each Chinese summary as `来源 [1] techcrunch.com · [2] reuters.com`; conflicts between sources print in a named list under the table
+     - **Rendering**: source links appear under each Chinese summary as `来源 [1] anthropic.com · [2] techcrunch.com`, primary first. A conflict between sources prints **in its own row** as `来源存在出入：…` rather than in a block under the table — a footnote at the bottom of the section is read by nobody looking at the row it qualifies
      - **Consolidation** merges reports of the same round — see the self-test below, because this is where the subtle bugs live:
        - The entry keeps the **earliest** announcement date. A recap two days later is not a new announcement, and letting its date win because its article happened to name the valuation files the round under the wrong day
        - Fields are filled from whichever copy discloses them, not taken wholesale from the richer one — two outlets rarely disclose the same subset
        - Two entries merge only if they **look like the same round**: agreement on stage or amount settles it; failing both, entries within three days are treated as one round. Company name alone is not enough — a seed in March and a Series B in August are one company and two events
        - Run `python tools/generate_word_doc.py --self-test` to check all of this
    - Output: `output/AI_News_20260706_20260720.docx`
-   - Estimated cost: a few dollars per run — the funding web search is the expensive part (one multi-search turn per day in the range, plus $10 per 1,000 searches)
+   - Estimated cost: the funding web search is the expensive part, and it is now **5× what it was** — days × 5 passes rather than days × 1, plus $10 per 1,000 searches. A five-day range is 25 search turns. That is the price of not missing rounds; trim it with `--funding-passes` if a run doesn't need full coverage
 
    **Flags:**
-   - `--min-signal N` — only include articles with relevance ≥ N (1=all, 3=curated, 4=high-signal only)
+   - `--min-signal N` — only include articles with relevance ≥ N (1=all, **3=default**, 4=high-signal only)
+   - `--funding-passes KEYS` — comma-separated subset of `primary,newsletters,databases,filings,trade`. Default: all five
+   - `--watchlist-section` — render the watchlist as its own section again (off by default)
    - `--watchlist FILE` — path to watchlist file (default: `watchlist.txt`)
    - `--include-frontier` — put frontier-lab and big-tech stories back in
    - `--include-opinion` — put commentary back in
@@ -181,8 +210,10 @@ Escape hatches: `--include-frontier`, `--include-opinion` and `--allow-unlinked`
 
 **Primary Deliverable:**
 - Word document: `output/AI_News_[start]_[end].docx`
-  - **AI News Summary** table: all posts grouped by category, 3 columns (Date | 优先级 | Chinese summary with hyperlinked title)
-  - **AI Fundraising News** table: funding events extracted from collected posts + supplemented via Claude web search
+  - **Header**: title + date range only
+  - **AI News Summary** table: AI stories only, no funding rounds, headlines cleaned of tweet formatting, links to primary sources
+  - **AI Fundraising News** table (7 columns, no 优先级): funding events extracted from collected posts + supplemented via a five-pass Claude web search per day
+  - Nothing below the fundraising table
 
 **Intermediate Files (in `.tmp/`):**
 - `raw_x.json` - X/Twitter posts collected via Nitter RSS (source `X/Twitter`), each with `source_url` (the news behind the post) and `x_url` (provenance)
@@ -285,7 +316,30 @@ cat .tmp/summarized_articles.json | jq '.[0]'
 
 ## Lessons Learned
 
-### 2026-08-13 Update — the funding search now works to a brief (current)
+### 2026-08-14 Update — the report is three parts, and the funding search stopped missing rounds (current)
+
+A review of the 8/10–8/14 report found five things wrong, and fixing them touched both generators plus the shared filters.
+
+**The report opened with its own build log.** `文章总数：33` and `共 33 篇` were the first two lines a reader met. They are facts about the pipeline, not news. Both are gone from the document and print to the console instead, where they were always the useful place for them. Same for the `生成时间` stamp on `generate_word_doc.py`.
+
+**The headlines were tweets.** `@perplexity_ai：今天我们推出 Projects……` — handle, hashtags, thread marker and the ellipsis where the post ran out of characters, all rendered verbatim. `clean_headline()` strips them. Worth noting *where* the bug was: the document header (`AI 资讯报告` + date range) was already clean; what read as copy-pasted from X was every item headline under it. The fix is in the row renderer, not the masthead — though the masthead is now shared and formats the range properly (`2026年8月10日 – 2026年8月14日`).
+
+**Three quarters of the news section was funding news.** On the last live dataset, 25 of 33 curated stories were funding rounds — the same rounds the fundraising table reports with better columns and wider sourcing. `is_fundraising_article()` had been hard-disabled (`return False`, "all articles go to the main news table"), so nothing separated them. Re-enabled via `is_funding_story()`, which reads the headline and summary and deliberately **not** the body: a launch story routinely mentions the company "raised $30M last year", and matching on the body moved product launches into the funding bucket.
+- Two false positives caught while testing, both instructive: bare `raised` matched *"MoK raised throughput 40%"* (a kernel benchmark), and bare `估值` matched a VC describing its accelerator's terms. Neither word survives on its own now — a raise without a round name has to appear next to a figure.
+- **The consequence is uncomfortable and worth stating**: the news section went from 33 items to 5. That is the requested behaviour working, but it also means the X-sourced collection is almost entirely funding news. If the news section should be fuller, the fix is upstream in `x_accounts.txt`, not in the filters.
+
+**"Substantively about AI" cannot be a keyword test.** The first attempt used `is_ai_relevant()` and immediately dropped *"Today we're launching Projects, an evolution of Spaces"* — a Perplexity product launch containing no AI term — while keeping funding posts that said "AI" once in passing. The summarizer's `category` is the right judge: it read the whole article. Keyword matching is the fallback for articles that have no category.
+
+**The funding search relied on one feed.** The 8/10–8/14 run missed Echovane, Point2 Technology, Discovered Materials, River AI, Legio, Palette, CodeRabbit, Skan AI, Yuno, Remepy, Silicon Data and Mindgard. Every one was public somewhere — a database entry, a Form D, an investor's own post — just not where the single search looked. The day is now searched five times over, once per kind of source (see the table in Phase 5), and the results are merged and corroboration-counted. Two supporting changes mattered as much as the extra passes:
+- The old *"verify each round against at least two reputable sources"* instruction, read strictly, **dropped exactly the small rounds the new passes exist to find**. One credible source now reports a round; the second is for confirming details.
+- `_prefer_primary_source()` reorders each row's links so the company's or investor's own post is the hyperlink. Aggregator coverage is a report of the announcement; the report wants the announcement. `AGGREGATOR_HOSTS` in `news_filters.py` is the list, and deal databases are on it — Crunchbase is compiled *from* announcements and is never primary.
+- **Cost**: this is 5× the funding search spend. A five-day range is 25 search turns, not 5. `--funding-passes` trims it, with the obvious trade.
+
+**Everything below the fundraising table is gone**, and the watchlist section above it with it. The source-conflict notes that used to print underneath moved into the rows they qualify — a footnote at the bottom of a section is read by nobody looking at the row it applies to. The `优先级` column came out of the fundraising table too: "seed → 重点关注" is a lookup the reader can do from the 轮次 column, and printing it as a verdict gave it the authority of a recommendation.
+
+**Still open:** the 12 missed companies above have not been re-verified against a live run — that needs a paid funding search over 8/10–8/14. The `优先级` (1-5 relevance) column in `generate_word_doc.py`'s *news* table is untouched; it is a different column from the fundraising one that was removed, but it shares the label.
+
+### 2026-08-13 Update — the funding search now works to a brief
 - **The funding section is written to a specification, not a topic.** It used to ask for "events announced on DATE" and take what came back; it now filters on the **first public announcement date**, names the publications to search, excludes recaps/roundups/unicorn lists/rumours, requires two-source verification, and returns an empty day rather than reaching for a nearby one. The per-day loop is what makes the date exact.
 - **"Not disclosed" needed a second half.** Told only that undisclosed details should read "Not disclosed", the model used it for anything it hadn't bothered to extract — stage and lead investor came back unknown on rounds whose own source named both. Adding *"'Not disclosed' means no source states it — not that you did not look"* turned Lovable from two blanks into `Series C` / `Menlo Ventures (lead)`.
 - **Three consolidation bugs, all found by feeding the merge realistic inputs rather than reading it.** Each one is now a self-test (`--self-test`):
