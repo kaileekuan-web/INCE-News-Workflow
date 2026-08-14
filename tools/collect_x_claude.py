@@ -31,7 +31,7 @@ from datetime import datetime
 from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import clean_text, call_claude_search, validate_date_range
+from tools.utils import clean_text, call_claude_search, validate_date_range, parallel_map, MAX_WORKERS
 from tools.news_filters import is_x_url
 
 SOURCE_LABEL = 'X/Twitter (via Claude search)'
@@ -217,18 +217,26 @@ def collect_accounts_via_claude(handles: list, start_date: str, end_date: str,
     start_dt, end_dt = validate_date_range(start_date, end_date)
     end_dt = end_dt.replace(hour=23, minute=59, second=59)
 
-    articles = []
     batches = [handles[i:i + batch_size] for i in range(0, len(handles), batch_size)]
-    for i, batch in enumerate(batches, 1):
+    print(f"  [claude] searching {len(batches)} batch(es) of accounts "
+          f"({MAX_WORKERS} at a time)...")
+
+    def _one(batch):
         names = ', '.join('@' + h for h in batch)
-        print(f"  [claude {i}/{len(batches)}] searching {names}...")
-        found = _run_search(
+        return _run_search(
             _accounts_prompt(batch, start_date, end_date, per_batch_limit),
             start_dt, end_dt, label=f"X account search ({names})",
         )
-        print(f"    found {len(found)} item(s)")
-        articles.extend(found)
 
+    # Each batch is an independent web-search turn of a minute or more; running
+    # them in sequence made a degraded Nitter run take far longer than a healthy
+    # one, which is backwards for a fallback.
+    results = parallel_map(_one, batches, label='account search')
+
+    articles = []
+    for batch, found in zip(batches, results):
+        print(f"    {', '.join('@' + h for h in batch)}: {len(found or [])} item(s)")
+        articles.extend(found or [])
     return articles
 
 

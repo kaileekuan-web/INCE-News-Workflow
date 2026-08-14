@@ -693,7 +693,7 @@ _PHRASE_LEAD_STOPWORDS = {
 # ("Sierra") its own marker. Version numbers still work — "Opus 4.8" matches
 # through the numeric alternative.
 _NAME_PHRASE_RE = re.compile(
-    r'\b(?:[A-Z][A-Za-z0-9\'’-]*|\d+(?:\.\d+)?)'
+    r'(?<![A-Za-z0-9_])(?:[A-Z][A-Za-z0-9\'’-]*|\d+(?:\.\d+)?)'
     r'(?:\s+(?:[A-Z][A-Za-z0-9\'’-]*|\d+(?:\.\d+)?)){1,5}')
 
 
@@ -747,7 +747,13 @@ GENERIC_MARKERS = {
 # A capitalized single word can identify a company (Sierra, Cursor, Harvey), so
 # it counts as a marker — but only these ones, which are neither generic nor
 # ordinary sentence-starters.
-_PROPER_TOKEN_RE = re.compile(r'\b[A-Z][A-Za-z0-9]{2,}\b')
+#
+# Explicit boundaries rather than \b: CJK characters are word characters to
+# Python's regex, so \b never matches between 中文 and a Latin capital. In
+# "加拿大AI公司Cohere与滑铁卢大学" — ordinary phrasing in a Chinese summary — the
+# company name yielded no marker at all.
+_PROPER_TOKEN_RE = re.compile(
+    r'(?<![A-Za-z0-9_])[A-Z][A-Za-z0-9]{2,}(?![A-Za-z0-9_])')
 
 # Word overlap required alongside shared markers, to call two items the same
 # story. Lower than the primary threshold because the shared names are doing
@@ -777,7 +783,12 @@ MIN_SHARED_STRONG_MARKERS = 1
 # duplicate a funding report must not print twice. Three shared markers is
 # specific enough that the wording no longer has to agree.
 STRONG_EVIDENCE_MIN_MARKERS = 3
-STRONG_EVIDENCE_MIN_OVERLAP = 0.12
+# 0.10, not 0.12: measured across all 561 pairs of a real report, summary
+# overlap between unrelated stories has median 0.031 and p90 0.058, so this
+# floor sits far above the noise. Between 0.08 and 0.12 the outcome on that
+# report is identical — the three-marker gate is what filters, and this is a
+# sanity check on top of it, not the discriminator.
+STRONG_EVIDENCE_MIN_OVERLAP = 0.10
 
 
 def _strong(markers: set) -> set:
@@ -853,41 +864,57 @@ def dedupe(articles: list, threshold: float = 0.55) -> tuple:
     never costs the report its only link to the story.
     """
     stats = {'same-url': 0, 'same-text': 0, 'near-text': 0, 'same-story': 0}
-    kept = []            # [(article, words, canon, names)]
+    kept = []            # [(article, words, canon, names, summary_words)]
     by_url = {}          # canonical url -> index in kept
     by_text = {}         # exact normalized text -> index in kept
 
-    def _replace(idx, article, words, canon, names):
+    def _replace(idx, article, words, canon, names, summary_words):
         old = kept[idx][0]
+        # Keep the union of both copies' names either way: the surviving article
+        # should match anything either of them would have matched, or a third
+        # write-up could slip through by resembling only the discarded one.
+        merged_names = names | kept[idx][3]
         if _richness(article) > _richness(old):
             old_canon = kept[idx][2]
-            # Keep the union of both copies' names: the surviving article should
-            # match anything either of them would have matched, or a third
-            # write-up could slip through by resembling only the discarded one.
-            kept[idx] = (article, words, canon or old_canon, names | kept[idx][3])
+            kept[idx] = (article, words, canon or old_canon, merged_names,
+                         summary_words or kept[idx][4])
             if old_canon and by_url.get(old_canon) == idx and canon and canon != old_canon:
                 by_url[canon] = idx
         else:
-            kept[idx] = kept[idx][:3] + (kept[idx][3] | names,)
+            kept[idx] = (kept[idx][0], kept[idx][1], kept[idx][2], merged_names,
+                         kept[idx][4] or summary_words)
 
     for article in articles:
         canon = canonical_url(news_link(article) or article.get('url', ''))
         body = (article.get('title', '') + ' ') + article_text(article)[:400]
         words = _significant_words(body)
-        names = story_markers(body)
+        # Markers also come from the summary when one exists. A summary is a
+        # normalized account of the event, so two write-ups converge there even
+        # when their source wording does not: on a real run, two reports of the
+        # same pre-seed round shared only the company name in their source text
+        # — the founder's name and the amount appeared in both summaries.
+        # Word overlap stays on the source text, where it is not diluted by
+        # summary boilerplate.
+        summary = article.get('summary') or ''
+        names = story_markers(body + ' ' + summary)
+        # Overlap is scored on the source text and, when it exists, the summary
+        # — whichever agrees more. Two accounts of one event can share almost no
+        # source wording (a company's own post versus the other party's) and
+        # still describe the same thing once summarized.
+        summary_words = _significant_words(summary) if summary else None
         exact = ''.join(sorted(words))[:200]
 
         if canon and canon in by_url:
             stats['same-url'] += 1
-            _replace(by_url[canon], article, words, canon, names)
+            _replace(by_url[canon], article, words, canon, names, summary_words)
             continue
         if exact and exact in by_text:
             stats['same-text'] += 1
-            _replace(by_text[exact], article, words, canon, names)
+            _replace(by_text[exact], article, words, canon, names, summary_words)
             continue
 
         dupe_idx = dupe_kind = None
-        for i, (_, kept_words, _, kept_names) in enumerate(kept):
+        for i, (_, kept_words, _, kept_names, kept_summary) in enumerate(kept):
             overlap = _jaccard(words, kept_words)
             if overlap >= threshold:
                 dupe_idx, dupe_kind = i, 'near-text'
@@ -898,22 +925,25 @@ def dedupe(articles: list, threshold: float = 0.55) -> tuple:
                 floor = (STRONG_EVIDENCE_MIN_OVERLAP
                          if len(shared) >= STRONG_EVIDENCE_MIN_MARKERS
                          else NAME_MATCH_MIN_OVERLAP)
-                if overlap >= floor:
+                agreement = overlap
+                if summary_words and kept_summary:
+                    agreement = max(agreement, _jaccard(summary_words, kept_summary))
+                if agreement >= floor:
                     dupe_idx, dupe_kind = i, 'same-story'
                     break
         if dupe_idx is not None:
             stats[dupe_kind] += 1
-            _replace(dupe_idx, article, words, canon, names)
+            _replace(dupe_idx, article, words, canon, names, summary_words)
             continue
 
-        kept.append((article, words, canon, names))
+        kept.append((article, words, canon, names, summary_words))
         idx = len(kept) - 1
         if canon:
             by_url.setdefault(canon, idx)
         if exact:
             by_text.setdefault(exact, idx)
 
-    return [a for a, _, _, _ in kept], stats
+    return [a for a, _, _, _, _ in kept], stats
 
 
 # ── Curation ──────────────────────────────────────────────────────────────────

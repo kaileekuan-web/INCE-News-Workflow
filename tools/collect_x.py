@@ -47,7 +47,7 @@ from urllib.parse import quote_plus
 from dotenv import load_dotenv
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from tools.utils import clean_text, validate_date_range
+from tools.utils import clean_text, validate_date_range, parallel_map, MAX_WORKERS
 from tools.news_filters import (
     is_ai_relevant, is_newsworthy, is_promo, is_opinion, has_hard_event,
     extract_source_url, frontier_match, get_labs, news_link, dedupe,
@@ -644,11 +644,20 @@ def collect_x(start_date: str, end_date: str, accounts_file: str,
         kept = absorb(found, level)
         print(f"  Fallback added {kept} post(s) (filter: {level})")
 
-    for query in pending_searches:
-        print(f"\nClaude web-search fallback for topic '{query}'...")
-        found = collect_query_via_claude(query, start_date, end_date)
-        kept = absorb(found, 'strict')
-        print(f"  Fallback added {kept} post(s) [strict]")
+    if pending_searches:
+        # One web-search turn per topic, and they were run back to back. On a
+        # real run that was minutes of pure waiting — the slowest thing left in
+        # collection once Nitter is healthy. absorb() still runs sequentially
+        # afterwards: it mutates the shared seen_urls/seen_texts sets, and the
+        # per-query log has to stay readable.
+        print(f"\nClaude web-search fallback for {len(pending_searches)} topic(s) "
+              f"({MAX_WORKERS} at a time)...")
+        results = parallel_map(
+            lambda q: collect_query_via_claude(q, start_date, end_date),
+            pending_searches, label='topic search')
+        for query, found in zip(pending_searches, results):
+            kept = absorb(found or [], 'strict')
+            print(f"  '{query}': {kept} post(s) kept [strict]")
 
     return finish(articles)
 
