@@ -343,10 +343,12 @@ def extract_funding_with_claude(articles: List[Dict]) -> List[Dict]:
             if not isinstance(event, dict) or not event.get('company'):
                 continue
 
-            # Normalize None → '不详' to match the rest of the pipeline
+            # Normalize None → 'Not disclosed' to match the rest of the pipeline.
+            # The funding table treats this string as "the source didn't say",
+            # and scores completeness by counting fields that aren't it.
             for field in ('stage', 'raise', 'valuation', 'investors'):
                 if event.get(field) is None:
-                    event[field] = '不详'
+                    event[field] = 'Not disclosed'
 
             event['date'] = pub_date
             event['url'] = url

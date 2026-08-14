@@ -19,6 +19,7 @@ import re
 import argparse
 import time
 from datetime import datetime
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
 
 # Add parent directory to path for imports
@@ -234,17 +235,60 @@ FUNDING_EVENTS_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "date": {"type": "string", "description": "公告日期 YYYY-MM-DD"},
-                    "company": {"type": "string"},
-                    "summary": {"type": "string"},
-                    "stage": {"type": "string"},
-                    "raise": {"type": "string"},
-                    "valuation": {"type": "string"},
-                    "investors": {"type": "string"},
-                    "url": {"type": "string"},
+                    "date": {
+                        "type": "string",
+                        "description": "Date the round was FIRST publicly announced, YYYY-MM-DD",
+                    },
+                    "announced_time": {
+                        "type": "string",
+                        "description": "Time of the announcement if the source gives one "
+                                       "(HH:MM, 24h, any timezone), else empty string. "
+                                       "Used only to order same-day announcements.",
+                    },
+                    "company": {"type": "string", "description": "Company name, in English"},
+                    "summary": {
+                        "type": "string",
+                        "description": "2-3 sentences of professional Simplified Chinese",
+                    },
+                    "stage": {
+                        "type": "string",
+                        "description": "English, e.g. Seed, Series A, Acquisition, "
+                                       "or 'Not disclosed'",
+                    },
+                    "raise": {
+                        "type": "string",
+                        "description": "English, e.g. 'US$50 million', or 'Not disclosed'",
+                    },
+                    "valuation": {
+                        "type": "string",
+                        "description": "English post-money valuation, or 'Not disclosed'",
+                    },
+                    "investors": {
+                        "type": "string",
+                        "description": "English, lead first, e.g. "
+                                       "'Sequoia Capital (lead), Index Ventures'",
+                    },
+                    "url": {
+                        "type": "string",
+                        "description": "Primary source: the original announcement, "
+                                       "or the most authoritative report of it",
+                    },
+                    "sources": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Every URL used to verify this round, primary first. "
+                                       "Two or more whenever they exist.",
+                    },
+                    "discrepancy": {
+                        "type": "string",
+                        "description": "If sources conflict on amount, stage or investors, "
+                                       "state the conflict in English and name the sources. "
+                                       "Empty string when they agree.",
+                    },
                 },
-                "required": ["date", "company", "summary", "stage", "raise",
-                             "valuation", "investors", "url"],
+                "required": ["date", "announced_time", "company", "summary", "stage",
+                             "raise", "valuation", "investors", "url", "sources",
+                             "discrepancy"],
                 "additionalProperties": False,
             },
         }
@@ -263,34 +307,49 @@ def _search_funding_single_day(api_key: str, date: str, topic: str) -> list:
     client reads ANTHROPIC_API_KEY from the environment.
     """
     if topic == 'deeptech':
-        sector_desc = "深科技公司（包括机器人、先进材料、量子计算、生物/医疗科技、航天、半导体、清洁能源等硬科技领域）"
+        sector = ("deep tech startups (robotics, advanced materials, quantum computing, "
+                  "bio/medtech, space, semiconductors, clean energy)")
+        sector_rule = ("INCLUDE hard-tech companies in those fields. EXCLUDE pure software "
+                       "plays with no deep-tech component.")
     else:
-        sector_desc = (
-            "以AI/人工智能为核心技术的公司。"
-            "纳入范围：大语言模型、生成式AI、AI agent、计算机视觉、语音AI、AI基础设施、AI驱动的SaaS产品。"
-            "排除范围：传统数据存储、传统网络安全（非AI核心）、普通云计算、区块链/加密货币、"
-            "传统金融科技、以及仅将AI作为边缘功能的传统软件公司"
+        sector = "AI startups"
+        sector_rule = (
+            "INCLUDE companies whose core technology is AI: LLMs, generative AI, AI agents, "
+            "computer vision, voice AI, AI infrastructure, AI-native SaaS.\n"
+            "EXCLUDE companies where AI is a peripheral feature, and exclude conventional "
+            "data storage, non-AI cybersecurity, general cloud infrastructure, "
+            "blockchain/crypto and conventional fintech."
         )
 
-    prompt = f"""搜索网络，找出{date}宣布的{sector_desc}融资轮次、投资和收购事件。
+    prompt = f"""Task: Find {sector} fundraising announcements that were FIRST publicly announced on {date}.
 
-对于每个融资事件，返回一个对象，字段如下：
-- "date": 宣布日期，格式为YYYY-MM-DD
-- "company": 获得融资的公司名称
-- "summary": 用中文描述该公司，包含：(1) 一句话说明公司的核心业务，(2) 如网上有创始人相关背景信息，请附上（例如：曾就职的知名公司、负责的项目、相关行业经验等）。参考格式："AI-native 网络安全公司，用 AI agent 实时检测攻击并自动响应。创始人 XX 曾负责 Amazon Web Services GuardDuty，联合创始人 YY 曾在 Abnormal AI 负责机器学习"
-- "stage": 融资轮次（天使轮、Pre-A轮、A轮、B轮、C轮等，如为收购则填"收购"，未知填"不详"）
-- "raise": 融资金额（例如："5000万美元"、"12亿美元"，未知填"不详"）
-- "valuation": 融资后估值（例如："5亿美元"、"12亿美元"，未知填"不详"）
-- "investors": 主要投资方（例如："领投：红杉资本，跟投：Andreessen Horowitz"，未知填"不详"）
-- "url": 最相关的新闻来源链接（如有则填完整URL，否则填""）
+Search TechCrunch, Reuters, Bloomberg, Fortune, VentureBeat, Crunchbase News, Sifted, Axios Pro, The Information, and official company press releases/blogs. Consolidate duplicate reports of the same funding round into a single entry.
 
-【事实约束】
-- 每一个字段都必须有本次搜索中找到的来源支持。不得凭已有知识补全金额、估值、投资方或创始人背景。
-- 无法从来源确认的字段一律填"不详"，不要猜测，也不要用相近的数字代替。
-- url 必须是真实存在、支持该条目的来源链接；没有链接就不要输出这条事件。
-- 只包含日期确实在 {date} 的事件；把邻近日期的旧新闻算进来会让报告的时间范围失真。
+Requirements:
+- Use {date} as the filtering criterion. Include only funding rounds that were FIRST publicly announced on that date.
+- Filter by the funding ANNOUNCEMENT date, NOT the publication date of recap articles or later news coverage.
+- {sector_rule}
+- Do NOT include:
+  - Funding rounds announced before or after {date}.
+  - Articles that recap previously announced funding rounds.
+  - Unicorn lists, funding roundups, market overviews, or trend articles.
+  - Rumors, fundraising discussions, or unconfirmed reports.
+- If no qualifying fundraising announcements exist for {date}, return an empty events array. Do NOT substitute companies from nearby dates — a near-miss silently widens the report's date range, which is worse than an empty day.
 
-只包含实际融资事件（已筹集资金、收购、IPO）。如未找到任何事件，返回空数组[]。"""
+Verification:
+- Verify each round against at least two reputable sources whenever they exist, and list every URL you used in "sources", primary first.
+- If sources conflict (amount, stage, investors), still report the round using the most authoritative source, and describe the conflict in "discrepancy", naming the sources.
+- If a detail is not publicly disclosed, write exactly "Not disclosed". Never estimate, and never carry a figure over from a different round.
+- "Not disclosed" means no source states it — not that you did not look. If a source names the round (Seed, Series A/B/C) or the lead investor, report it. Read the sources you already found before falling back to "Not disclosed" on stage or investors.
+- Every field must be supported by a source you found in this search. Do not fill gaps from prior knowledge.
+
+Language:
+- company, stage, raise, valuation, investors: English. Amounts as "US$50 million".
+- summary: professional Simplified Chinese ONLY, 2-3 sentences, suitable for a VC investment newsletter. Cover what the company does, the round itself, and — if disclosed — how the capital will be used.
+- Factual, objective, information-dense. No marketing language.
+- Vary how each summary opens. Do NOT begin with "这是一家…". Start instead from the product, the technology, the target market, the financing event, or the use of funds — for example "<Company> 专注于……", "<Company> 开发……", "本轮融资将用于……", "面向……市场，<Company>……". Each summary should differ in structure from the others.
+
+Return one object per distinct funding round."""
 
     result = call_claude_search(prompt, schema=FUNDING_EVENTS_SCHEMA,
                                 label=f"funding search {date}")
@@ -359,8 +418,9 @@ def _merge_funding_events(base: list, extra: list) -> list:
     'base' events take priority — they come from Claude's extraction of our
     collected articles (higher fidelity). 'extra' events from the Claude web
     search are only added if the company wasn't already found in base.
-    When two entries for the same company exist, the one with more non-unknown
-    fields is kept (fewest '不详'/'N/A' values wins).
+    When two entries for the same company exist, the one with more disclosed
+    fields is kept. This is also what consolidates the same round reported by
+    several publications into one row.
     """
     seen: dict = {}
     for e in base + extra:
@@ -371,13 +431,49 @@ def _merge_funding_events(base: list, extra: list) -> list:
         if key not in seen:
             seen[key] = e
         else:
-            # Keep whichever entry has more filled-in fields
+            # Keep whichever entry has more filled-in fields, and carry the
+            # other one's source links across: two publications covering one
+            # round are exactly the corroboration the report wants to show.
             existing = seen[key]
-            existing_score = sum(1 for v in existing.values() if str(v) not in ('不详', '', 'N/A', None))
-            new_score = sum(1 for v in e.values() if str(v) not in ('不详', '', 'N/A', None))
-            if new_score > existing_score:
-                seen[key] = e
+            merged_sources = _merge_sources(existing, e)
+            winner = e if _disclosed_count(e) > _disclosed_count(existing) else existing
+            loser = existing if winner is e else e
+            winner['sources'] = merged_sources
+            # A discrepancy noted by either copy has to survive the merge.
+            if not (winner.get('discrepancy') or '').strip():
+                winner['discrepancy'] = loser.get('discrepancy', '')
+            seen[key] = winner
     return list(seen.values())
+
+
+# Values meaning "the source did not say". "Not disclosed" is what the funding
+# prompt asks for; the Chinese spellings are kept so entries from an older run,
+# or from the article-extraction path, still score correctly here.
+UNDISCLOSED = {'not disclosed', '不详', '未披露', '未公开', 'n/a', 'na', 'none',
+               'unknown', '', 'null'}
+
+
+def _is_disclosed(value) -> bool:
+    return str(value).strip().lower() not in UNDISCLOSED
+
+
+def _disclosed_count(event: dict) -> int:
+    return sum(1 for k, v in event.items()
+               if k not in ('sources', 'discrepancy') and _is_disclosed(v))
+
+
+def _merge_sources(*events) -> list:
+    """Union of every source URL across copies of one round, order preserved."""
+    out = []
+    for e in events:
+        urls = e.get('sources') or []
+        if isinstance(urls, str):
+            urls = [urls]
+        for u in list(urls) + [e.get('url', '')]:
+            u = (u or '').strip()
+            if u and u not in out:
+                out.append(u)
+    return out
 
 
 def extract_funding_with_web_search(api_key: str, start_date: str, end_date: str,
@@ -541,7 +637,7 @@ def _funding_priority(event: dict) -> tuple:
         return ('重点关注', 'F4CCCC')   # light red — early stage, act fast
     if any(k in stage for k in ('series b', 'b轮', 'b+')):
         return ('值得关注', 'FFF2CC')   # light yellow — still interesting
-    if not stage or stage in ('不详', 'n/a', 'na', 'unknown'):
+    if not _is_disclosed(stage):
         return ('值得关注', 'FFF2CC')   # light yellow — unknown, worth checking
     return ('一般了解', 'F3F3F3')       # light gray — Series C+, IPO, acquisition
 
@@ -584,8 +680,11 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
             run.bold = True
             set_run_font(run, font_size=10)
 
-    # Sort by date oldest first
-    funding_events.sort(key=lambda x: x.get('date', ''))
+    # Chronological by announcement: date first, then the announcement time when
+    # a source gave one, so several rounds announced on the same day appear in
+    # the order they broke rather than in search-result order.
+    funding_events.sort(key=lambda x: (x.get('date', ''),
+                                       x.get('announced_time', '') or '99:99'))
 
     # Data rows
     for event in funding_events:
@@ -596,8 +695,11 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
         set_run_font(date_run, font_size=9)
 
         # Col 1: company name, hyperlinked if URL available
-        company = event.get('company', '不详')
-        url = event.get('url', event.get('_url', ''))
+        company = event.get('company', 'Not disclosed')
+        url = event.get('url') or event.get('_url') or ''
+        if not url:
+            merged = _merge_sources(event)
+            url = merged[0] if merged else ''
         company_para = row_cells[1].paragraphs[0]
         if url:
             add_hyperlink(company_para, url, company, font_size=9)
@@ -611,18 +713,68 @@ def create_funding_table(doc: Document, funding_events: list, heading: str = 'AI
         priority_run.bold = True
         set_run_font(priority_run, font_size=9)
 
-        # Cols 3-7: remaining fields
+        # Col 3: Chinese summary, followed by the corroborating source links.
+        # The sources belong next to the claim they support rather than in a
+        # column of their own — a ninth column on letter paper leaves each one
+        # too narrow to read.
+        summary_para = row_cells[3].paragraphs[0]
+        summary_run = summary_para.add_run(str(event.get('summary', 'Not disclosed')))
+        set_run_font(summary_run, font_size=9)
+
+        sources = _merge_sources(event)
+        if sources:
+            src_para = row_cells[3].add_paragraph()
+            src_para.paragraph_format.space_before = Pt(2)
+            label_run = src_para.add_run('来源 ')
+            set_run_font(label_run, font_size=8)
+            label_run.font.color.rgb = RGBColor(120, 120, 120)
+            for n, src in enumerate(sources[:3], 1):
+                if n > 1:
+                    sep = src_para.add_run(' · ')
+                    set_run_font(sep, font_size=8)
+                    sep.font.color.rgb = RGBColor(120, 120, 120)
+                add_hyperlink(src_para, src, f'[{n}] {_source_label(src)}', font_size=8)
+
+        # Cols 4-7: remaining fields
         remaining = [
-            event.get('summary', '不详'),
-            event.get('stage', '不详'),
-            event.get('raise', '不详'),
-            event.get('valuation', '不详'),
-            event.get('investors', '不详'),
+            event.get('stage', 'Not disclosed'),
+            event.get('raise', 'Not disclosed'),
+            event.get('valuation', 'Not disclosed'),
+            event.get('investors', 'Not disclosed'),
         ]
-        for i, val in enumerate(remaining, start=3):
+        for i, val in enumerate(remaining, start=4):
             para = row_cells[i].paragraphs[0]
             run = para.add_run(str(val))
             set_run_font(run, font_size=9)
+
+    # Conflicts between sources go under the table, named. Silently picking one
+    # figure would present a contested number as settled fact.
+    conflicts = [(e.get('company', ''), (e.get('discrepancy') or '').strip())
+                 for e in funding_events if (e.get('discrepancy') or '').strip()]
+    if conflicts:
+        note_heading = doc.add_paragraph()
+        note_heading.paragraph_format.space_before = Pt(6)
+        run = note_heading.add_run('来源存在出入的条目：')
+        run.bold = True
+        set_run_font(run, font_size=9)
+        for company, note in conflicts:
+            para = doc.add_paragraph()
+            para.paragraph_format.space_after = Pt(2)
+            name_run = para.add_run(f'{company}: ')
+            name_run.bold = True
+            set_run_font(name_run, font_size=9)
+            note_run = para.add_run(note)
+            set_run_font(note_run, font_size=9)
+            note_run.font.color.rgb = RGBColor(89, 89, 89)
+
+
+def _source_label(url: str) -> str:
+    """Publisher name for a source link — 'techcrunch.com' from a full URL."""
+    try:
+        host = (urlsplit(url).hostname or '').lower()
+    except ValueError:
+        return 'source'
+    return host[4:] if host.startswith('www.') else (host or 'source')
 
 
 def convert_bullets_to_paragraph(text: str) -> str:

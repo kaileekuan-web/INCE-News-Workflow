@@ -96,12 +96,12 @@ def article_to_funding_event(article: dict) -> dict:
         f'"company": 获得融资的公司名称\n'
         f'"summary": 用中文描述该公司，包含：(1) 一句话说明公司核心业务，(2) 如文章中提到创始人背景信息，请附上（姓名、曾任职的公司和职责）。'
         f'参考格式："AI-native 网络安全公司，用 AI agent 实时检测攻击并自动响应。创始人 XX 曾负责 Amazon Web Services GuardDuty"\n'
-        f'"stage": 融资轮次（天使轮、Pre-A轮、A轮、B轮、C轮等，收购填"收购"，未知填"不详"）\n'
-        f'"raise": 融资金额（例如："5000万美元"，未知填"不详"）\n'
-        f'"valuation": 融资后估值（例如："5亿美元"，未知填"不详"）\n'
-        f'"investors": 主要投资方（例如："领投：红杉资本"，未知填"不详"）\n\n'
+        f'"stage": 融资轮次，用英文填写（Seed、Series A、Series B、Acquisition 等），未披露填 "Not disclosed"\n'
+        f'"raise": 融资金额，用英文填写（例如 "US$50 million"），未披露填 "Not disclosed"\n'
+        f'"valuation": 融资后估值，用英文填写（例如 "US$500 million"），未披露填 "Not disclosed"\n'
+        f'"investors": 主要投资方，用英文填写（例如 "Sequoia Capital (lead), Index Ventures"），未披露填 "Not disclosed"\n\n'
         f"【事实约束】只能使用上方文章中明确出现的信息。不得根据公司名补全你已知的背景、"
-        f"融资金额、估值、投资方或创始人经历；文章未写明的字段填\"不详\"，不要猜测。\n\n"
+        f"融资金额、估值、投资方或创始人经历；文章未写明的字段填 \"Not disclosed\"，不要猜测。\n\n"
         f"仅返回有效JSON，不要包含其他文字。"
     )
 
@@ -115,10 +115,10 @@ def article_to_funding_event(article: dict) -> dict:
                 "date": date,
                 "company": data.get("company", title),
                 "summary": data.get("summary", ""),
-                "stage": data.get("stage", "不详"),
-                "raise": data.get("raise", "不详"),
-                "valuation": data.get("valuation", "不详"),
-                "investors": data.get("investors", "不详"),
+                "stage": data.get("stage", "Not disclosed"),
+                "raise": data.get("raise", "Not disclosed"),
+                "valuation": data.get("valuation", "Not disclosed"),
+                "investors": data.get("investors", "Not disclosed"),
                 "_url": article.get("url", ""),
             }
         except Exception as e:
@@ -130,10 +130,10 @@ def article_to_funding_event(article: dict) -> dict:
         "date": date,
         "company": title,
         "summary": raw[:200],
-        "stage": "不详",
-        "raise": "不详",
-        "valuation": "不详",
-        "investors": "不详",
+        "stage": "Not disclosed",
+        "raise": "Not disclosed",
+        "valuation": "Not disclosed",
+        "investors": "Not disclosed",
         "_url": article.get("url", ""),
     }
 
