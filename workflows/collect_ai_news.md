@@ -236,7 +236,7 @@ After each run, verify:
 3. **Summary Quality**: Manually review 10 random summaries
    - Target: Clear, concise, captures key points, no invented entities or figures
 4. **Links**: headlines link to articles, never to x.com. Unlinked headlines are expected — they are posts that linked nowhere
-5. **Runtime**: Collection is the fast part; summarization is one API call per post
+5. **Runtime**: about 8-10 minutes end to end on a 2-week range. Measured on a real run: collection 2.5 min of Nitter plus ~2 min of topic searches, source resolution ~7 min, summarization ~1 min, funding search ~5 min, document 15s. If a run takes much longer, read the `⏱` phase lines in the log — they name the phase that owns the time rather than leaving you to guess
 6. **Cost**: single-digit dollars per run — dominated by per-article summarization and the day-by-day funding web search. Filtering at collection cuts this substantially, since dropped posts are never summarized
 7. **Data Quality**: No duplicate posts, retweets excluded, no opinion pieces
 
@@ -272,7 +272,30 @@ cat .tmp/summarized_articles.json | jq '.[0]'
 
 ## Lessons Learned
 
-### 2026-08-13 Update — debug pass on the whole pipeline (current)
+### 2026-08-13 Update — first live run end to end (current)
+
+Run: 2026-07-30 → 2026-08-13. 75 posts collected, 33 in the report. Measured phase times, all with `NEWS_MAX_WORKERS=6`:
+
+| phase | time | notes |
+|---|---|---|
+| Collection (Nitter) | 2.5 min | 29/29 accounts served, 54 posts kept |
+| Collection (6 topic searches) | **12 min** | sequential — since fixed, expect ~2 min |
+| Dedup | instant | |
+| Source resolution | 6.8 min | 9 search calls, 6 at a time |
+| Summarization | **1.1 min** | 38 articles, 1.7s each — was ~6 min sequential |
+| Funding search | 5 min | 15 days, 6 at a time |
+| Document | 14 s | translation skipped: summaries already Chinese |
+
+- **The searches nobody had parallelised owned the run.** Collection spent 12 of its 15 minutes on six web searches run back to back. The funding search and source resolution had been parallelised; the `search:` topic lines and the account-fallback batches had not. Both do now — that alone is ~10 minutes.
+- **`--curate` cut 72 articles to 38 before summarization**, so a third of the run's LLM spend simply never happened. Worth knowing the trade: the summarizer's `subject_type` / `content_type` judgement never runs on what it drops, so those drops rest on the deterministic filters alone. `--allow-unlinked`, or dropping `--curate`, shows everything.
+- **Two duplicate pairs still reached the report, and only reading the output found them.** Both were the same shape — one event, two publishers:
+  - The same pre-seed round twice: the amounts differed ($4.95M vs €4.29M) and each cited a different lead investor, so the source texts shared only the company name. Both *summaries* carried the founder's name and the amount. Markers now come from the summary too — it is a normalized account of the event, so two write-ups converge there when the source wording doesn't.
+  - A partnership announced by both parties (the company's post, the university's quote): 0.029 word overlap. Overlap is now scored on summaries as well, whichever agrees more, and the three-marker floor moved 0.12 → 0.10. Checked before changing: across all 561 pairs of the live report, summary overlap between unrelated stories has median 0.031 and p90 0.058, and any floor from 0.08 to 0.12 gives an identical result — the marker gate is the discriminator, the floor is a sanity check.
+- **`\b` never matches between a CJK character and a Latin capital.** In `加拿大AI公司Cohere与滑铁卢大学` — ordinary phrasing in a Chinese summary — the company name produced no marker at all, leaving Chinese text partly invisible to dedup. Proper-noun and name-phrase matching now use explicit boundaries.
+- **Verification is earning its keep.** `resolve_sources` recovered 16 of 36 link-less posts and *rejected 5* whose article didn't corroborate the post (overlap 0.07-0.44) — those would have been wrong links under a plausible headline. It also surfaced 3 duplicates that were invisible until both posts pointed at the same URL.
+- Final audit of the report: 0 frontier/big-tech stories, 33/33 `content_type: news`, 33/33 linked to published coverage, **0 x.com links**, dedup idempotent, 0 ungrounded figures (2 fired mid-run and were repaired).
+
+### 2026-08-13 Update — debug pass on the whole pipeline
 - **The most valuable item type in the report was being silently dropped.** "Harvey raised a $300 million Series E led by Kleiner Perkins" was rejected as `not-ai`: the post says what happened, not what the company does, and the topic filter demands the word. Found by running `collect_x.py` end-to-end against a stubbed Nitter for the first time — the module had never actually been executed in a test. A post with a **hard event and a real figure** now survives the topic test, marked `topic_unverified`; the summarizer, which reads the whole article, answers "is this an AI company?" with a new `非AI` category, and curation drops those. A regex cannot know what Harvey does; a reader of the article can.
 - **The timing logging I added last round crashed three pipelines on success.** Deeptech, consumer and crypto never call `_phase()`, but the completion block read `jobs[job_id]["_phase_started"]` directly — a `KeyError` caught by the pipeline's `except`, reporting a failed run for a report that was finished and on disk. Now one defensive `_log_timings()` helper, and every pipeline's phases are timed rather than just two.
 - **Hand-picked articles are exempt from the editorial filters.** With `--curate` running before summarization, a WeChat URL pasted by hand could be dropped as a "statement" and never appear — silently discarding an explicit instruction. Anything from WeChat (or flagged `manual`) now bypasses the filters while still going through dedup.
