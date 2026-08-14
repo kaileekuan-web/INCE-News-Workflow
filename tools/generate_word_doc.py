@@ -570,6 +570,48 @@ def _round_amount(event: dict) -> str:
     return f"{match.group(1).replace(',', '')}{unit[:1]}"
 
 
+# Round identity, recovered from however a source chose to word the stage.
+# Ordered: the first pattern that matches wins, so the specific beats the
+# generic ("Series A growth round" is a Series A, not a growth round).
+_STAGE_PATTERNS = [
+    (re.compile(r'series\s+([a-j])\b', re.I), None),        # captures the letter
+    (re.compile(r'\b([a-j])\s*轮', re.I), None),
+    (re.compile(r'pre[-\s]?seed|preseed|angel|天使|种子前', re.I), 'pre-seed'),
+    (re.compile(r'\bseed\b|种子', re.I), 'seed'),
+    (re.compile(r'\bipo\b|上市|public offering', re.I), 'ipo'),
+    (re.compile(r'acqui|merger|收购|并购', re.I), 'acquisition'),
+    (re.compile(r'\bgrowth\b|成长|扩张', re.I), 'growth'),
+    (re.compile(r'bridge|过桥', re.I), 'bridge'),
+    (re.compile(r'strategic|战略', re.I), 'strategic'),
+    (re.compile(r'\bventure\b|风险投资', re.I), 'venture'),
+]
+
+
+def _stage_key(stage) -> str:
+    """
+    The round a stage string names, or '' when it names none recognisably.
+
+    Sources word the same round differently — a 2026-08-13 run returned one
+    Databricks raise as "Strategic growth round", "Growth round" and
+    "Late-stage growth round", and an exact string comparison read those as
+    three separate $5B rounds and printed three rows. Normalising first means
+    prose variation stops splitting a round, while Seed vs Series B still reads
+    as two.
+
+    Returning '' for unrecognised text is deliberate: an unfamiliar phrase is
+    not evidence of a *different* round, so it must not veto a merge that the
+    amount and date otherwise support.
+    """
+    text = str(stage or '').strip()
+    if not _is_disclosed(text):
+        return ''
+    for pattern, canonical in _STAGE_PATTERNS:
+        match = pattern.search(text)
+        if match:
+            return canonical or f'series {match.group(1).lower()}'
+    return ''
+
+
 def _same_round(a: dict, b: dict) -> bool:
     """
     Do two entries for the same company describe the SAME funding round?
@@ -582,16 +624,18 @@ def _same_round(a: dict, b: dict) -> bool:
     one report leaves them undisclosed — entries announced within three days of
     each other are treated as one round, since that is a recap window, not a
     second raise.
+
+    Stages are compared as round identities rather than as strings; see
+    _stage_key(). Only two *recognised* and *different* rounds veto a merge.
     """
     stage_a, stage_b = str(a.get('stage') or ''), str(b.get('stage') or '')
-    if _is_disclosed(stage_a) and _is_disclosed(stage_b):
-        if stage_a.strip().lower() != stage_b.strip().lower():
-            return False            # different stages: different rounds
+    key_a, key_b = _stage_key(stage_a), _stage_key(stage_b)
+    if key_a and key_b and key_a != key_b:
+        return False                # different stages: different rounds
     amount_a, amount_b = _round_amount(a), _round_amount(b)
     if amount_a and amount_b and amount_a != amount_b:
         return False                # different amounts: different rounds
-    if (amount_a and amount_a == amount_b) or (
-            _is_disclosed(stage_a) and stage_a.strip().lower() == stage_b.strip().lower()):
+    if (amount_a and amount_a == amount_b) or (key_a and key_a == key_b):
         return True
 
     date_a, date_b = (a.get('date') or '')[:10], (b.get('date') or '')[:10]
@@ -1938,6 +1982,43 @@ def _self_test() -> int:
     expect('different rounds stay separate',
            ev(date='2026-03-01', company='Acme AI', stage='Seed', raise_='US$3 million'),
            ev(date='2026-08-01', company='Acme AI', stage='Series B', raise_='US$60 million'), 2)
+
+    # Stage prose varies between sources describing one round. These three
+    # wordings are verbatim from the 2026-08-13 run, which printed the same
+    # Databricks $5B raise three times.
+    expect('stage prose variants merge',
+           ev(date='2026-08-13', company='Databricks', stage='Strategic growth round',
+              raise_='US$5 billion', valuation='US$190 billion'),
+           ev(date='2026-08-13', company='Databricks', stage='Growth round',
+              raise_='US$5 billion', valuation='US$190 billion'), 1)
+    expect('third stage variant merges too',
+           ev(date='2026-08-13', company='Databricks', stage='Growth round',
+              raise_='US$5 billion', valuation='US$190 billion'),
+           ev(date='2026-08-13', company='Databricks', stage='Late-stage growth round',
+              raise_='US$5 billion', valuation='US$190 billion'), 1)
+    expect('unrecognised stage prose does not veto an amount match',
+           ev(date='2026-08-13', company='Acme AI', stage='an unusual round',
+              raise_='US$5 million'),
+           ev(date='2026-08-13', company='Acme AI', stage='something else entirely',
+              raise_='US$5 million'), 1)
+    expect('seed extension still reads as seed',
+           ev(date='2026-08-13', company='Pathway', stage='Seed (extension)',
+              raise_='US$30 million'),
+           ev(date='2026-08-13', company='Pathway', stage='Seed', raise_='US$30 million'), 1)
+    expect('series letters still separate rounds',
+           ev(date='2026-08-01', company='Acme AI', stage='Series A round',
+              raise_='US$20 million'),
+           ev(date='2026-08-02', company='Acme AI', stage='Series B round',
+              raise_='US$20 million'), 2)
+
+    for stage, want_key in (
+            ('Strategic growth round', 'growth'), ('Late-stage growth round', 'growth'),
+            ('Series A', 'series a'), ('Series A round', 'series a'),
+            ('Pre-Seed', 'pre-seed'), ('Seed (extension)', 'seed'),
+            ('B轮', 'series b'), ('Acquisition', 'acquisition'),
+            ('Not disclosed', ''), ('an unusual round', '')):
+        if _stage_key(stage) != want_key:
+            failures.append(f"_stage_key({stage!r}) = {_stage_key(stage)!r}, want {want_key!r}")
     expect('same amount, one report omits stage',
            ev(date='2026-08-10', company='Beta AI', stage='Series B', raise_='US$40 million'),
            ev(date='2026-08-11', company='Beta AI', raise_='US$40 million'), 1)
