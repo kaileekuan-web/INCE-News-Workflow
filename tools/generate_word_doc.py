@@ -422,28 +422,102 @@ def _merge_funding_events(base: list, extra: list) -> list:
     fields is kept. This is also what consolidates the same round reported by
     several publications into one row.
     """
-    seen: dict = {}
+    by_company: dict = {}
     for e in base + extra:
         raw_name = e.get('company', '')
         if not raw_name:
             continue
-        key = _company_key(raw_name)
-        if key not in seen:
-            seen[key] = e
+        rounds = by_company.setdefault(_company_key(raw_name), [])
+        for i, existing in enumerate(rounds):
+            if _same_round(existing, e):
+                rounds[i] = _consolidate(existing, e)
+                break
         else:
-            # Keep whichever entry has more filled-in fields, and carry the
-            # other one's source links across: two publications covering one
-            # round are exactly the corroboration the report wants to show.
-            existing = seen[key]
-            merged_sources = _merge_sources(existing, e)
-            winner = e if _disclosed_count(e) > _disclosed_count(existing) else existing
-            loser = existing if winner is e else e
-            winner['sources'] = merged_sources
-            # A discrepancy noted by either copy has to survive the merge.
-            if not (winner.get('discrepancy') or '').strip():
-                winner['discrepancy'] = loser.get('discrepancy', '')
-            seen[key] = winner
-    return list(seen.values())
+            rounds.append(e)
+    return [r for rounds in by_company.values() for r in rounds]
+
+
+def _round_amount(event: dict) -> str:
+    """Digits of the raise amount, for comparing 'US$20 million' with '$20M'."""
+    raw = str(event.get('raise') or '')
+    if not _is_disclosed(raw):
+        return ''
+    match = re.search(r'(\d[\d,.]*)\s*(k|m|b|bn|thousand|million|billion|万|亿)?', raw, re.I)
+    if not match:
+        return ''
+    unit = (match.group(2) or '').lower()
+    return f"{match.group(1).replace(',', '')}{unit[:1]}"
+
+
+def _same_round(a: dict, b: dict) -> bool:
+    """
+    Do two entries for the same company describe the SAME funding round?
+
+    Company name alone is not enough. A seed round in March and a Series B in
+    August are one company and two events, and merging them silently drops a
+    round and files the survivor under the wrong date and stage.
+
+    Agreement on stage or amount settles it. Failing both — which happens when
+    one report leaves them undisclosed — entries announced within three days of
+    each other are treated as one round, since that is a recap window, not a
+    second raise.
+    """
+    stage_a, stage_b = str(a.get('stage') or ''), str(b.get('stage') or '')
+    if _is_disclosed(stage_a) and _is_disclosed(stage_b):
+        if stage_a.strip().lower() != stage_b.strip().lower():
+            return False            # different stages: different rounds
+    amount_a, amount_b = _round_amount(a), _round_amount(b)
+    if amount_a and amount_b and amount_a != amount_b:
+        return False                # different amounts: different rounds
+    if (amount_a and amount_a == amount_b) or (
+            _is_disclosed(stage_a) and stage_a.strip().lower() == stage_b.strip().lower()):
+        return True
+
+    date_a, date_b = (a.get('date') or '')[:10], (b.get('date') or '')[:10]
+    if date_a and date_b:
+        try:
+            gap = abs((datetime.strptime(date_a, '%Y-%m-%d')
+                       - datetime.strptime(date_b, '%Y-%m-%d')).days)
+            return gap <= 3
+        except ValueError:
+            pass
+    return True                     # too little to tell them apart; treat as one
+
+
+# Fields that describe the round itself. On consolidation each one is taken from
+# whichever copy actually discloses it.
+_FUNDING_FACT_FIELDS = ('stage', 'raise', 'valuation', 'investors', 'summary',
+                        'company', 'url', 'announced_time')
+
+
+def _consolidate(a: dict, b: dict) -> dict:
+    """
+    Fold two reports of one funding round into a single entry.
+
+    The richer copy is the base, then anything it leaves undisclosed is filled
+    from the other — two outlets rarely disclose the same subset, and taking one
+    entry wholesale threw away whichever details only the other one carried.
+
+    The date is the EARLIEST of the two, always. This is the rule the whole
+    brief turns on: a recap published two days later is not a new announcement,
+    and letting the recap's date win because its article happened to name the
+    valuation would file the round under the wrong day.
+    """
+    winner, loser = (b, a) if _disclosed_count(b) > _disclosed_count(a) else (a, b)
+    merged = dict(winner)
+
+    for field in _FUNDING_FACT_FIELDS:
+        if not _is_disclosed(merged.get(field)) and _is_disclosed(loser.get(field)):
+            merged[field] = loser[field]
+
+    dates = [d for d in (a.get('date'), b.get('date')) if d]
+    if dates:
+        merged['date'] = min(dates)
+
+    merged['sources'] = _merge_sources(winner, loser)
+    if not (merged.get('discrepancy') or '').strip():
+        merged['discrepancy'] = loser.get('discrepancy', '') or ''
+    return merged
 
 
 # Values meaning "the source did not say". "Not disclosed" is what the funding
@@ -1463,5 +1537,88 @@ def main():
     )
 
 
+def _self_test() -> int:
+    """
+    Consolidation tests: `python tools/generate_word_doc.py --self-test`.
+
+    This is the subtlest logic in the funding path. Merging two reports of one
+    round is the whole point of the section, and merging two *different* rounds
+    of one company silently deletes a round — so both directions are pinned
+    here rather than checked by hand.
+    """
+    def ev(**kw):
+        base = dict(date='', announced_time='', company='', summary='',
+                    stage='Not disclosed', raise_='Not disclosed',
+                    valuation='Not disclosed', investors='Not disclosed',
+                    url='', sources=[], discrepancy='')
+        base.update(kw)
+        base['raise'] = base.pop('raise_')
+        return base
+
+    failures = []
+
+    def expect(label, a, b, want):
+        got = len(_merge_funding_events([a], [b]))
+        if got != want:
+            failures.append(f"{label}: {got} entries, expected {want}")
+
+    expect('recap of one round merges',
+           ev(date='2026-08-10', company='Acme AI', stage='Series A', raise_='US$20 million'),
+           ev(date='2026-08-12', company='Acme AI', stage='Series A', raise_='US$20 million'), 1)
+    expect('different rounds stay separate',
+           ev(date='2026-03-01', company='Acme AI', stage='Seed', raise_='US$3 million'),
+           ev(date='2026-08-01', company='Acme AI', stage='Series B', raise_='US$60 million'), 2)
+    expect('same amount, one report omits stage',
+           ev(date='2026-08-10', company='Beta AI', stage='Series B', raise_='US$40 million'),
+           ev(date='2026-08-11', company='Beta AI', raise_='US$40 million'), 1)
+    expect('same amount written differently',
+           ev(date='2026-08-10', company='Gamma AI', stage='Series A', raise_='US$20 million'),
+           ev(date='2026-08-10', company='Gamma AI', stage='Series A', raise_='$20M'), 1)
+    expect('two stages announced the same day stay separate',
+           ev(date='2026-08-10', company='Delta AI', stage='Seed', raise_='US$5 million'),
+           ev(date='2026-08-10', company='Delta AI', stage='Series A', raise_='US$30 million'), 2)
+    expect('nothing disclosed, days apart, is one round',
+           ev(date='2026-08-10', company='Eps AI'), ev(date='2026-08-11', company='Eps AI'), 1)
+    expect('nothing disclosed, weeks apart, is two rounds',
+           ev(date='2026-08-01', company='Zeta AI'), ev(date='2026-08-22', company='Zeta AI'), 2)
+
+    # A recap must never move the round's date, and must still contribute detail.
+    first = ev(date='2026-08-10', announced_time='08:00', company='Acme AI',
+               stage='Series A', raise_='US$20 million', url='https://first.example',
+               sources=['https://first.example'])
+    recap = ev(date='2026-08-12', company='Acme AI', stage='Series A',
+               raise_='US$20 million', valuation='US$150 million',
+               investors='Benchmark (lead)', url='https://recap.example',
+               sources=['https://recap.example'], discrepancy='amount disputed')
+    for label, merged in (('forward', _merge_funding_events([first], [recap])[0]),
+                          ('reversed', _merge_funding_events([recap], [first])[0])):
+        if merged['date'] != '2026-08-10':
+            failures.append(f"{label}: recap date won ({merged['date']})")
+        if merged['valuation'] != 'US$150 million':
+            failures.append(f"{label}: lost the recap's disclosed valuation")
+        if merged['announced_time'] != '08:00':
+            failures.append(f"{label}: lost the original announcement time")
+        if len(_merge_sources(merged)) != 2:
+            failures.append(f"{label}: sources not unioned")
+        if not merged['discrepancy']:
+            failures.append(f"{label}: discrepancy dropped")
+
+    # Both spellings of "unknown" have to read as undisclosed.
+    for value, want in (('不详', False), ('Not disclosed', False), ('', False),
+                        ('US$5 million', True)):
+        if _is_disclosed(value) != want:
+            failures.append(f"_is_disclosed({value!r}) should be {want}")
+
+    if failures:
+        print(f"✗ {len(failures)} failure(s):")
+        for f in failures:
+            print(f"    {f}")
+        return 1
+    print("✓ generate_word_doc: funding consolidation self-tests passed")
+    return 0
+
+
 if __name__ == "__main__":
+    if '--self-test' in sys.argv:
+        sys.exit(_self_test())
     main()
