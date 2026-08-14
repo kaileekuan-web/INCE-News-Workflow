@@ -34,9 +34,11 @@ from tools.utils import (
 )
 from tools.detect_funding import extract_funding_with_claude
 from tools.verify_emit import emit_funding_claims
+from tools.resolve_sources import upgrade_to_primary_sources
 from tools.news_filters import (
-    curate, news_link, is_aggregator, canonical_url, clean_headline,
-    filter_news_section, signal_score,
+    curate, news_link, is_aggregator, is_primary_source, is_roundup_url,
+    is_own_announcement, canonical_url, clean_headline, filter_news_section,
+    signal_score,
 )
 
 try:
@@ -412,7 +414,15 @@ def _search_funding_single_day(api_key: str, date: str, topic: str,
                  "thoroughly rather than broadly. Small rounds count as much as large "
                  "ones: a $3M seed nobody wrote an article about is exactly what this "
                  "pass exists to find. Do not skip a round for being minor, for being "
-                 "outside the US, or for having only one source.")
+                 "outside the US, or for having only one source.\n\n"
+                 "**Deal lists contain many companies. Return every one of them.** "
+                 "When a source is a deal list, a funding roundup, an Axios Pro Rata "
+                 "issue or a database's daily listing, it names several rounds — "
+                 "return a separate object for EVERY qualifying company in it, not "
+                 "one object for the item that happened to lead. A previous run read "
+                 "an Axios issue covering Point2, Bowman and Jazz and returned a "
+                 "single unrelated company from it; the other rounds were simply "
+                 "lost. Enumerate the list before you answer.")
     else:
         where = ("Search TechCrunch, Reuters, Bloomberg, Fortune, VentureBeat, "
                  "Crunchbase News, Sifted, Axios Pro Rata, The Information, SEC Form D "
@@ -437,7 +447,9 @@ Requirements:
 
 Verification:
 - Verify each round against at least two reputable sources whenever they exist, and list every URL you used in "sources", primary first.
-- "Primary" means the announcement itself — the company's own blog post, press release or /news page, or the lead investor's own post about the round. Put that URL in "url" and first in "sources". Use a trade-press or database writeup as "url" only when no primary source exists. A round that a company announced on its own blog should not be sourced to a summary of that blog post.
+- "Primary" means the announcement itself — the company's own blog post, press release or /news page, the release on a wire (Business Wire, PR Newswire, GlobeNewswire), or the lead investor's own post about the round. Put that URL in "url" and first in "sources". Use a trade-press or database writeup as "url" only when no primary source exists. A round that a company announced on its own blog should not be sourced to a summary of that blog post.
+- **Never cite a roundup as a round's "url".** A "venture funding roundup August 12", a weekly deal digest, an "all deals" page or a "first look" newsletter issue is a list of other people's news. Use it to LEARN that a round happened, then search for that specific company's own announcement and cite THAT. If the company's announcement genuinely cannot be found, cite the single-company article about that round — never the list it appeared in.
+- Do not cite a syndicator's copy of a press release (Morningstar, Yahoo Finance, StreetInsider, MSN reprints of Business Wire). Cite the wire original or the company's own newsroom.
 - One credible source is enough to REPORT a round; two are for confirming its details. Do not drop a round because you found only the filing, only the database entry, or only the investor's post — report it with what that source states and "Not disclosed" for the rest.
 - If sources conflict (amount, stage, investors), still report the round using the most authoritative source, and describe the conflict in "discrepancy", naming the sources.
 - If a detail is not publicly disclosed, write exactly "Not disclosed". Never estimate, and never carry a figure over from a different round.
@@ -702,6 +714,122 @@ def _prefer_primary_source(event: dict) -> dict:
     return out
 
 
+PRIMARY_SOURCE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "url": {
+            "type": "string",
+            "description": "The company's or lead investor's own announcement of "
+                           "this round — their blog post, /news or /press page, or "
+                           "the press release on a wire. Empty string if none exists.",
+        },
+        "publisher": {
+            "type": "string",
+            "description": "Who published it, e.g. 'Echovane' or 'Business Wire'",
+        },
+    },
+    "required": ["url", "publisher"],
+    "additionalProperties": False,
+}
+
+
+def _find_primary_source(event: dict) -> str:
+    """
+    Search for one round's own announcement. Returns a URL or ''.
+
+    Run only for rows that came back sourced to a roundup or a trade-press
+    writeup. The multi-pass search finds the *round*; this finds the round's own
+    announcement, which is a different query — "Echovane seed funding" surfaces
+    whoever wrote about it, "Echovane blog announcing seed" surfaces Echovane.
+    """
+    company = (event.get('company') or '').strip()
+    if not company:
+        return ''
+
+    prompt = (
+        f"Find the ORIGINAL announcement of this funding round — not coverage of it.\n\n"
+        f"Company: {company}\n"
+        f"Round: {event.get('stage', '')} {event.get('raise', '')}\n"
+        f"Announced: {event.get('date', '')}\n"
+        f"Investors: {event.get('investors', '')}\n\n"
+        f"Look for, in this order:\n"
+        f"1. {company}'s own website — a blog post, /news, /press or newsroom entry "
+        f"announcing the round.\n"
+        f"2. The press release on Business Wire, PR Newswire, GlobeNewswire or "
+        f"EIN Presswire.\n"
+        f"3. The lead investor's own post about leading this round.\n\n"
+        f"Return an empty url if none of those exist. An empty answer is correct and "
+        f"useful — do NOT substitute a news article, a funding roundup, a deal list, "
+        f"a database entry (Crunchbase, PitchBook, Tracxn) or a syndicated copy of a "
+        f"press release (Morningstar, Yahoo Finance, MSN). Those are what this search "
+        f"exists to replace.\n\n"
+        f"The URL must be about THIS round, not the company's homepage and not a "
+        f"different round."
+    )
+
+    result = call_claude_search(prompt, schema=PRIMARY_SOURCE_SCHEMA, max_uses=4,
+                                label=f"primary source {company}")
+    url = ((result or {}).get('url') or '').strip()
+    # Trust but verify. Asked for a primary source the model still returns trade
+    # press, so the answer is checked against the company and investor names
+    # rather than against a list of sites we happen to know.
+    if url and is_own_announcement(url, company, event.get('investors', '')):
+        return url
+    return ''
+
+
+def _resolve_primary_sources(events: list) -> list:
+    """
+    Replace aggregator links with the round's own announcement where one exists.
+
+    Ranking alone was not enough. A live run on 2026-08-10..14 ranked correctly
+    and still shipped a table sourced mostly to roundup pages, because ranking
+    can only choose among the URLs the search happened to return — and every one
+    of them was downstream. So the rows that need a primary source go and look
+    for one.
+    """
+    needs = [e for e in events
+             if not any(is_own_announcement(u, e.get('company', ''),
+                                            e.get('investors', ''))
+                        for u in _merge_sources(e))]
+    if not needs:
+        print("  Sourcing: every row already has a primary source")
+        return events
+
+    print(f"  Sourcing: {len(needs)}/{len(events)} row(s) have only aggregator "
+          f"links — searching for the original announcements")
+
+    found = parallel_map(_find_primary_source, needs, label='primary source')
+
+    resolved = 0
+    by_id = {}
+    for event, url in zip(needs, found):
+        if url:
+            by_id[id(event)] = url
+            resolved += 1
+
+    out = []
+    for event in events:
+        url = by_id.get(id(event))
+        if url:
+            merged = dict(event)
+            merged['_primary_source'] = True
+            # Primary first, and it becomes the row's link. The aggregator stays
+            # in `sources` — it corroborated the round and the reader may want it.
+            merged['sources'] = [url] + [u for u in _merge_sources(event)
+                                         if canonical_url(u) != canonical_url(url)]
+            merged['url'] = url
+            out.append(merged)
+        else:
+            out.append(event)
+
+    print(f"    Found primary sources for {resolved}/{len(needs)}")
+    still = len(needs) - resolved
+    if still:
+        print(f"    {still} row(s) keep an aggregator link — no primary source found")
+    return out
+
+
 def extract_funding_with_web_search(api_key: str, start_date: str, end_date: str,
                                     topic: str = 'ai', passes: list = None) -> list:
     """
@@ -790,6 +918,10 @@ def extract_funding_with_web_search(api_key: str, start_date: str, end_date: str
                   + (' …' if len(single) > 8 else ''))
 
     unique = [_prefer_primary_source(e) for e in unique]
+
+    # Ranking picks the best of what the search returned; this goes and finds
+    # the announcement when everything returned was downstream of it.
+    unique = _resolve_primary_sources(unique)
 
     # Drop events outside the requested date range — a web search often returns
     # historical results regardless of the date specified.
@@ -1546,7 +1678,8 @@ def generate_word_doc(start_date: str, end_date: str,
                       include_opinion: bool = False,
                       require_source: bool = True,
                       funding_passes: list = None,
-                      watchlist_section: bool = False):
+                      watchlist_section: bool = False,
+                      require_primary_source_link: bool = True):
     """
     Main document generation function
 
@@ -1591,7 +1724,11 @@ def generate_word_doc(start_date: str, end_date: str,
     # The deeptech report is out of scope: "no funding rounds, must be AI" is
     # the AI brief's editorial line, not a property of every report built here.
     if funding_topic == 'ai':
-        articles, _off_topic = filter_news_section(articles, min_signal=min_signal)
+        if require_primary_source_link:
+            articles = upgrade_to_primary_sources(articles)
+        articles, _off_topic = filter_news_section(
+            articles, min_signal=min_signal,
+            require_primary_source=require_primary_source_link)
     elif min_signal > 1:
         before = len(articles)
         articles = [a for a in articles if signal_score(a) >= min_signal]
@@ -1725,6 +1862,11 @@ def main():
     parser.add_argument('--include-opinion', action='store_true',
                         help='Keep commentary, opinion pieces and executive statements. '
                              'Off by default: the news table is for reported events.')
+    parser.add_argument('--allow-aggregator-source',
+                        dest='require_primary_source_link', action='store_false',
+                        help='Keep news items whose only link is an aggregator. '
+                             'By default they are dropped: the report links to '
+                             'the announcement, not to a writeup of it.')
     parser.add_argument('--watchlist-section', action='store_true',
                         help='Render the watchlist companies as their own section '
                              'above the news table. Off by default: the report is '
@@ -1761,6 +1903,7 @@ def main():
         args.require_source,
         [k for k in (args.funding_passes or '').split(',') if k.strip()] or None,
         args.watchlist_section,
+        args.require_primary_source_link,
     )
 
 

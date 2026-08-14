@@ -40,7 +40,116 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.utils import call_claude_search, parallel_map, MAX_WORKERS
 from tools.news_filters import (
     article_text, news_link, is_x_url, corroborates, canonical_url, dedupe,
+    article_subject, has_primary_source, is_own_announcement, clean_headline,
 )
+
+
+# ── Upgrading a source to the primary one ─────────────────────────────────────
+
+PRIMARY_UPGRADE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "subject": {
+            "type": "string",
+            "description": "The company or organisation the story is ABOUT "
+                           "(not the publication reporting it)",
+        },
+        "url": {
+            "type": "string",
+            "description": "That organisation's OWN announcement of this news — "
+                           "their blog post, /news, /press or newsroom entry, "
+                           "model card, research page, or their press release on "
+                           "a wire. Empty string if none exists.",
+        },
+    },
+    "required": ["subject", "url"],
+    "additionalProperties": False,
+}
+
+
+def _find_primary_for_article(article: dict) -> tuple:
+    """
+    Find the announcement behind one news item. Returns (url, subject) or ('','').
+
+    Distinct from resolve_sources() above, which finds *an* article for a post
+    that links nowhere. This one starts from an item that already has a link and
+    asks a different question: who is this story about, and did they announce it
+    themselves? "Cursor open-sources MoK" surfaces MarkTechPost; "Cursor's own
+    blog post about MoK" surfaces Cursor.
+    """
+    title = clean_headline(article.get('title') or '')
+    summary = (article.get('summary') or article.get('description') or '')[:400]
+    current = news_link(article)
+
+    prompt = (
+        f"Find the ORIGINAL announcement behind this AI news item — the source "
+        f"the coverage is based on, not the coverage.\n\n"
+        f"Headline: {title}\n"
+        f"Summary: {summary}\n"
+        f"Currently linked (a secondary report): {current}\n"
+        f"Posted by X account: @{(article.get('author') or '').lstrip('@')}\n\n"
+        f"First identify the company or organisation the story is ABOUT. Then find "
+        f"THEIR own publication of this news, in this order:\n"
+        f"1. Their blog, /news, /press, /research or newsroom entry about it.\n"
+        f"2. Their model card or repository page (Hugging Face, GitHub) when the "
+        f"news is a model or open-source release.\n"
+        f"3. Their press release on Business Wire, PR Newswire or GlobeNewswire.\n"
+        f"4. For a policy or regulatory story, the issuing body's own page — the "
+        f"regulator, agency or standards group that published it.\n\n"
+        f"Return an empty url if no such announcement exists. An empty answer is "
+        f"correct and useful. Do NOT substitute another news article, a newsletter, "
+        f"a roundup, an aggregator (TechCrunch, The Verge, VentureBeat, "
+        f"MarktechPost, Business Insider) or a syndicated reprint — those are what "
+        f"this search exists to replace.\n\n"
+        f"The URL must be about THIS specific news, not the organisation's homepage."
+    )
+
+    result = call_claude_search(prompt, schema=PRIMARY_UPGRADE_SCHEMA, max_uses=4,
+                                label=f"primary source: {title[:40]}")
+    if not result:
+        return '', ''
+    url = (result.get('url') or '').strip()
+    subject = (result.get('subject') or '').strip()
+    if not url:
+        return '', ''
+    # Verify against the subject's own name rather than a list of known sites:
+    # the model returns trade press here too when asked for a primary source.
+    if is_own_announcement(url, subject) or is_own_announcement(
+            url, article_subject(article)):
+        return url, subject
+    return '', ''
+
+
+def upgrade_to_primary_sources(articles: list) -> list:
+    """
+    Replace aggregator links with the subject's own announcement where one exists.
+
+    Records `subject_company` on every article it resolves, so a later
+    has_primary_source() check does not have to guess the subject from the X
+    handle. Articles that already link to a primary source are left untouched
+    and cost nothing.
+    """
+    needs = [a for a in articles if news_link(a) and not has_primary_source(a)]
+    if not needs:
+        print("  Sources: every article already links to a primary source")
+        return articles
+
+    print(f"  Sources: {len(needs)}/{len(articles)} article(s) link to aggregators "
+          f"— searching for the original announcements ({MAX_WORKERS} at a time)")
+
+    found = parallel_map(_find_primary_for_article, needs, label='primary source')
+
+    resolved = 0
+    for article, (url, subject) in zip(needs, found):
+        if url:
+            article['source_url'] = url
+            article['source_publisher'] = subject or article.get('source_publisher', '')
+            if subject:
+                article['subject_company'] = subject
+            resolved += 1
+
+    print(f"    Upgraded {resolved}/{len(needs)} to a primary source")
+    return articles
 
 # Posts per search call. One per call wastes a search turn on an item the model
 # resolves in a sentence; too many and it rations a fixed search budget across

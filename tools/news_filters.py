@@ -657,7 +657,17 @@ AGGREGATOR_HOSTS = (
     'technode.com', 'nikkei.com',
     # deal databases: compiled from announcements, so never the announcement
     'crunchbase.com', 'pitchbook.com', 'dealroom.co', 'tracxn.com',
-    'cbinsights.com', 'owler.com',
+    'cbinsights.com', 'owler.com', 'takeoffradar.com', 'stocktitan.net',
+    # roundup mills and niche trade blogs — added 2026-08-14 after a live run
+    # sourced most of its fundraising table to techstartups.com "venture capital
+    # funding roundup" pages, which are the exact article type the funding brief
+    # tells the search to exclude
+    'techstartups.com', 'theaiinsider.tech', 'hpcwire.com', 'aiwire.net',
+    'fitt.co', 'insider.fitt.co', 'siliconrepublic.com', 'techfundingnews.com',
+    'startupdaily.net', 'businessofbusiness.com',
+    # syndicators that republish someone else's wire copy under their own domain
+    'morningstar.com', 'finance.yahoo.com', 'marketscreener.com',
+    'streetinsider.com', 'benzinga.com', 'investing.com', 'msn.com',
     # newsletters / link blogs / community aggregators
     'tldr.tech', 'news.ycombinator.com', 'reddit.com', 'medium.com',
     'substack.com', 'analyticsindiamag.com', 'marktechpost.com',
@@ -666,6 +676,47 @@ AGGREGATOR_HOSTS = (
     # Chinese aggregators
     '36kr.com', 'jiqizhixin.com', 'qbitai.com', 'ithome.com', 'sina.com.cn',
 )
+
+# Press-release wires are NOT aggregators. They carry the company's own release
+# verbatim — the company pays to publish there, and the text is the company's.
+# A syndicator's copy of that same release (morningstar.com/news/business-wire/…)
+# is a copy, and is on the list above.
+PRESS_WIRE_HOSTS = (
+    'businesswire.com', 'prnewswire.com', 'globenewswire.com',
+    'einpresswire.com', 'newswire.com', 'accesswire.com', 'prweb.com',
+    'presseportal.de', 'kyodonews.jp',
+)
+
+# A roundup is a list of many rounds. Citing one as the source for a specific
+# round is what the funding brief already forbids as subject matter, and the
+# live run did it anyway on eight of seventeen rows. Matched on the path, so it
+# catches a roundup wherever it is hosted.
+_ROUNDUP_PATH_RE = re.compile(
+    r'(?:funding|venture|vc|deal|startup)[-_]?(?:round[-_]?up|roundup|digest|'
+    r'wrap|recap|weekly|daily|briefing|newsletter)'
+    r'|round[-_]?up|deals?[-_]of[-_]the[-_](?:week|day|month)'
+    r'|(?:week|month)[-_]in[-_](?:review|funding|venture)'
+    r'|all[-_]deals|first[-_]look', re.I)
+
+
+def is_roundup_url(url: str) -> bool:
+    """True for a multi-company deal list rather than an article about one round."""
+    if not url:
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return bool(_ROUNDUP_PATH_RE.search((parts.path or '') + '?' + (parts.query or '')))
+
+
+def is_press_wire(url: str) -> bool:
+    """True for a wire carrying the company's own press release verbatim."""
+    host = _host(url)
+    if not host:
+        return False
+    host = host[4:] if host.startswith('www.') else host
+    return any(host == h or host.endswith('.' + h) for h in PRESS_WIRE_HOSTS)
 
 # Path fragments that mark a URL as an official announcement even on a host we
 # don't recognise — a company blog lives on the company's own domain, and that
@@ -678,7 +729,18 @@ _PRIMARY_PATH_HINTS = (
 
 
 def is_aggregator(url: str) -> bool:
-    """True for a news site reporting on someone else's announcement."""
+    """
+    True for a source that reports on, republishes, or compiles someone else's
+    announcement rather than being it.
+
+    A roundup counts wherever it is hosted: a "venture funding roundup August
+    12" page is a list of other people's news even on a domain we don't know.
+    A press wire does not count — see PRESS_WIRE_HOSTS.
+    """
+    if not url:
+        return False
+    if is_roundup_url(url) and not is_press_wire(url):
+        return True
     host = _host(url)
     if not host:
         return False
@@ -688,17 +750,155 @@ def is_aggregator(url: str) -> bool:
 
 def is_primary_source(url: str) -> bool:
     """
-    True when `url` looks like the announcement itself rather than coverage of
-    it: a company or investor domain, ideally on a blog/news/press path.
+    True when `url` is the announcement itself rather than coverage of it: the
+    company's or investor's own domain, or a press wire carrying their release.
 
-    Deliberately loose. The report's rule is "prefer the primary source when one
-    exists", so a false negative here costs an aggregator link that was going to
-    be used anyway, while the check being strict enough to reject TechCrunch is
-    what actually matters.
+    Deliberately loose about *which* company domain — there is one per company
+    and no list can hold them. What it is strict about is rejecting the things
+    we know are downstream: trade press, syndicators, databases and roundups.
     """
-    if not url or is_x_url(url) or is_aggregator(url):
+    if not url or is_x_url(url):
         return False
-    return True
+    if is_press_wire(url):
+        return True
+    return not is_aggregator(url)
+
+
+def _domain_name(url: str) -> str:
+    """The registrable domain's name part, letters and digits only.
+
+    'https://www.coderabbit.ai/blog/x' → 'coderabbit'
+    'https://blog.discoveredmaterials.com/' → 'discoveredmaterials'
+    """
+    host = _host(url)
+    if not host:
+        return ''
+    host = host.lower()
+    for prefix in ('www.', 'blog.', 'news.', 'press.', 'media.', 'about.', 'ir.'):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+            break
+    parts = host.split('.')
+    if len(parts) < 2:
+        return re.sub(r'[^a-z0-9]', '', host)
+    # Handle two-part public suffixes (.co.uk, .com.au) by stepping back one more.
+    name = parts[-2]
+    if name in ('co', 'com', 'org', 'net', 'gov', 'ac') and len(parts) >= 3:
+        name = parts[-3]
+    return re.sub(r'[^a-z0-9]', '', name)
+
+
+def _name_key(name: str) -> str:
+    """A company or investor name reduced to comparable letters."""
+    name = re.sub(r'\b(inc|llc|ltd|limited|corp|corporation|gmbh|sa|ag|bv|plc|'
+                  r'co|company|labs?|technologies|technology|holdings|group|'
+                  r'ventures?|capital|partners?|management)\b', ' ', name, flags=re.I)
+    return re.sub(r'[^a-z0-9]', '', name.lower())
+
+
+def is_own_domain(url: str, name: str) -> bool:
+    """True when `url` lives on the domain belonging to `name`."""
+    domain = _domain_name(url)
+    key = _name_key(name)
+    if not domain or not key or len(key) < 3:
+        return False
+    return domain == key or key in domain or (len(domain) >= 4 and domain in key)
+
+
+# Platforms where a company publishes under its own account. The domain belongs
+# to the platform, so ownership is proven by the path instead:
+# huggingface.co/blog/CohereLabs/… is Cohere's own model announcement, and
+# treating it as third-party coverage because the domain says "huggingface" was
+# wrong — it is exactly the primary source an AI report should link to.
+PLATFORM_HOSTS = ('huggingface.co', 'github.com', 'gitlab.com',
+                  'modelscope.cn', 'kaggle.com', 'replicate.com')
+
+
+def is_platform_owned(url: str, name: str) -> bool:
+    """True for `url` on a publishing platform under `name`'s own account."""
+    host = _host(url)
+    if not host:
+        return False
+    host = host[4:] if host.startswith('www.') else host
+    if not any(host == h or host.endswith('.' + h) for h in PLATFORM_HOSTS):
+        return False
+    key = _name_key(name)
+    if not key or len(key) < 3:
+        return False
+    segments = [re.sub(r'[^a-z0-9]', '', s.lower())
+                for s in (urlsplit(url).path or '').split('/') if s]
+    return any(s and (s == key or key in s or (len(s) >= 4 and s in key))
+               for s in segments)
+
+
+def is_own_announcement(url: str, company: str = '', investors: str = '') -> bool:
+    """
+    True only with positive proof that `url` is the round's own announcement:
+    the company's domain, a named investor's domain, or a press wire carrying
+    their release.
+
+    This is deliberately stricter than is_primary_source(), which only knows how
+    to reject sites on a denylist. A denylist cannot promise "not an aggregator"
+    — the live run on 2026-08-14 proved it, slipping `pulse2.com` through as
+    "primary" purely because nobody had heard of it. When the caller knows the
+    company name — which the fundraising table always does — the check can
+    demand evidence instead of absence of evidence.
+    """
+    if not url or is_x_url(url):
+        return False
+    if is_roundup_url(url) and not is_press_wire(url):
+        return False
+    if is_press_wire(url):
+        return True
+    if company and (is_own_domain(url, company) or is_platform_owned(url, company)):
+        return True
+    for investor in re.split(r'[,;、/]| and ', investors or ''):
+        investor = re.sub(r'\(.*?\)', '', investor).strip()
+        if len(investor) > 3 and (is_own_domain(url, investor)
+                                  or is_platform_owned(url, investor)):
+            return True
+    return False
+
+
+# Handles that post on behalf of a company but are not the company's own name,
+# so the domain check needs the company, not the handle.
+_HANDLE_SUFFIX_RE = re.compile(r'(?:_?ai|_?hq|_?inc|_?labs?|_?team|_?eng|_?dev)$', re.I)
+
+
+def article_subject(article: dict) -> str:
+    """
+    Best available name for whoever the article is about, for source checking.
+
+    The X handle is the strongest signal in this pipeline: most posts in the
+    news section are companies announcing their own news, so @perplexity_ai
+    linking to perplexity.ai is the common case and is exactly what we want to
+    recognise as primary. Falls back to the resolved publisher name.
+    """
+    for key in ('subject_company', 'company'):
+        if (article.get(key) or '').strip():
+            return article[key].strip()
+
+    handle = (article.get('author') or '').strip().lstrip('@')
+    if not handle:
+        match = _TWEET_HANDLE_PREFIX_RE.match(article.get('title') or '')
+        if match:
+            handle = match.group(0).strip().lstrip('@').rstrip(':：').strip()
+    if handle:
+        return _HANDLE_SUFFIX_RE.sub('', handle) or handle
+    return (article.get('source_publisher') or '').strip()
+
+
+def has_primary_source(article: dict) -> bool:
+    """
+    True when the article's link is the subject's own announcement.
+
+    Same standard the fundraising table uses, applied to the news section: the
+    report links to the thing that happened, not to a writeup of it.
+    """
+    url = news_link(article)
+    if not url:
+        return False
+    return is_own_announcement(url, article_subject(article))
 
 
 def _source_candidates(article: dict) -> list:
@@ -931,7 +1131,8 @@ def signal_score(article: dict, default: int = 3) -> int:
 
 
 def filter_news_section(articles: list, no_funding: bool = False,
-                        min_signal: int = 3) -> tuple:
+                        min_signal: int = 3,
+                        require_primary_source: bool = True) -> tuple:
     """
     Reduce the curated articles to what the AI News Summary should carry.
 
@@ -946,11 +1147,18 @@ def filter_news_section(articles: list, no_funding: bool = False,
          boilerplate.
       3. **Above the signal floor.** The summarizer's 1-5 relevance score; 3 and
          up by default, which is what cuts filler.
+      4. **Linked to a primary source.** The subject's own announcement, not a
+         writeup of it. Run `upgrade_to_primary_sources()` (resolve_sources.py)
+         before this, which goes and finds the announcement for the ones that
+         arrived pointing at an aggregator; what this drops is the residue that
+         nobody announced publicly. Set `require_primary_source=False` to keep
+         aggregator-linked items instead.
 
     Returns (kept, removed_by_reason). Both AI report generators call this, so
     the two layouts stay one editorial line rather than two that drift.
     """
-    kept, removed = [], {'funding': [], 'not AI': [], 'low signal': []}
+    kept, removed = [], {'funding': [], 'not AI': [], 'low signal': [],
+                         'aggregator source': []}
 
     for article in articles:
         if not no_funding and is_funding_story(article):
@@ -959,6 +1167,8 @@ def filter_news_section(articles: list, no_funding: bool = False,
             removed['not AI'].append(article)
         elif signal_score(article) < min_signal:
             removed['low signal'].append(article)
+        elif require_primary_source and not has_primary_source(article):
+            removed['aggregator source'].append(article)
         else:
             kept.append(article)
 
@@ -1520,6 +1730,107 @@ def _test():
     check('x links never returned',
           best_source_link({'url': 'https://x.com/a/status/1',
                             'sources': ['https://twitter.com/b/status/2']}), '')
+
+    # Roundups and syndicators — every URL below is one the 2026-08-14 live
+    # funding run actually shipped as a row's source.
+    check('techstartups roundup is an aggregator',
+          is_aggregator('https://techstartups.com/2026/08/12/venture-capital-'
+                        'startup-funding-roundup-august-12-2026-coatue/'), True)
+    check('axios all-deals first-look is an aggregator',
+          is_aggregator('https://www.axios.com/pro/all-deals/2026/08/10/'
+                        'pro-rata-premium-first-look-point2-bowman-jazz'), True)
+    check('morningstar copy of a wire release is an aggregator',
+          is_aggregator('https://www.morningstar.com/news/business-wire/'
+                        '20260810167426/discovered-materials-closes-9m-seed-round'), True)
+    check('roundup detected on an unknown host',
+          is_aggregator('https://some-blog.example/2026/08/12/'
+                        'weekly-funding-roundup/'), True)
+    check('business wire original is primary',
+          is_primary_source('https://www.businesswire.com/news/home/2026081012345/'
+                            'en/Discovered-Materials-Closes-9M-Seed'), True)
+    check('press wire beats the roundup path check',
+          is_aggregator('https://www.prnewswire.com/news-releases/'
+                        'acme-funding-roundup-item-123.html'), False)
+    check('company blog is primary',
+          is_primary_source('https://echovane.com/blog/our-seed-round'), True)
+    check('techcrunch article is not primary',
+          is_primary_source('https://techcrunch.com/2026/08/11/river-ai/'), False)
+    check('roundup url detection',
+          is_roundup_url('https://x.example/2026/08/13/deals-of-the-week/'), True)
+    check('ordinary article is not a roundup',
+          is_roundup_url('https://x.example/2026/08/13/acme-raises-5m/'), False)
+    # is_own_announcement: positive proof, not absence from a denylist
+    check('company domain proves ownership',
+          is_own_announcement('https://coderabbit.ai/blog/series-c', 'CodeRabbit'), True)
+    check('multiword company domain',
+          is_own_announcement('https://discoveredmaterials.com/news/seed',
+                              'Discovered Materials'), True)
+    check('company blog subdomain',
+          is_own_announcement('https://blog.echovane.com/seed', 'Echovane'), True)
+    check('suffix ignored when matching',
+          is_own_announcement('https://vitalis.ai/press/a', 'Vitalis AI Inc.'), True)
+    check('investor domain proves ownership',
+          is_own_announcement('https://www.generalcatalyst.com/stories/river-ai',
+                              'River AI', 'General Catalyst (lead), Index'), True)
+    check('unknown trade blog is NOT proof',
+          is_own_announcement('https://pulse2.com/flagler-health-raises-50-million/',
+                              'Flagler Health'), False)
+    check('techcrunch is NOT proof',
+          is_own_announcement('https://techcrunch.com/2026/08/11/river-ai/',
+                              'River AI'), False)
+    check('press wire is proof',
+          is_own_announcement('https://www.businesswire.com/news/home/1/en/Acme',
+                              'Acme'), True)
+    check('roundup on a company domain is still rejected',
+          is_own_announcement('https://acme.com/blog/weekly-funding-roundup/',
+                              'Acme'), False)
+    check('domain name extraction',
+          [_domain_name('https://www.coderabbit.ai/blog/x'),
+           _domain_name('https://blog.acme.co.uk/p')], ['coderabbit', 'acme'])
+
+    # Company-owned pages on a publishing platform
+    check('huggingface org blog is the org announcing',
+          is_own_announcement('https://huggingface.co/blog/CohereLabs/meet-north',
+                              'Cohere'), True)
+    check('huggingface page of a different org is not',
+          is_own_announcement('https://huggingface.co/blog/meta/llama',
+                              'Cohere'), False)
+
+    # News-section source checking
+    check('company posting its own blog is primary',
+          has_primary_source({'author': '@perplexity_ai',
+                              'source_url': 'https://www.perplexity.ai/hub/blog/projects'}),
+          True)
+    check('company posting an aggregator writeup is not',
+          has_primary_source({'author': '@cursor_ai',
+                              'source_url': 'https://www.marktechpost.com/2026/08/04/cursor-mok/'}),
+          False)
+    check('resolved subject beats the handle',
+          has_primary_source({'author': '@VentureBeat', 'subject_company': 'Skan AI',
+                              'source_url': 'https://www.skan.ai/news/series-b'}),
+          True)
+    check('unlinked article has no primary source',
+          has_primary_source({'author': '@acme'}), False)
+    check('subject from handle strips the ai suffix',
+          article_subject({'author': '@cursor_ai'}), 'cursor')
+    check('aggregator-sourced items are dropped',
+          len(filter_news_section(
+              [{'author': '@cursor_ai', 'category': '模型与研究', 'relevance': 4,
+                'title': 'Cursor open-sources MoK',
+                'source_url': 'https://www.marktechpost.com/2026/08/04/cursor-mok/'}],
+              )[0]), 0)
+    check('aggregator-sourced items kept with the escape hatch',
+          len(filter_news_section(
+              [{'author': '@cursor_ai', 'category': '模型与研究', 'relevance': 4,
+                'title': 'Cursor open-sources MoK',
+                'source_url': 'https://www.marktechpost.com/2026/08/04/cursor-mok/'}],
+              require_primary_source=False)[0]), 1)
+
+    check('primary beats roundup in ranking',
+          best_source_link({'sources': [
+              'https://techstartups.com/2026/08/12/venture-capital-funding-roundup/',
+              'https://coderabbit.ai/blog/series-c']}),
+          'https://coderabbit.ai/blog/series-c')
 
     # Headlines
     check('strips handle prefix',

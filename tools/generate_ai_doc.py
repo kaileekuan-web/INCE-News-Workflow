@@ -38,6 +38,7 @@ from dotenv import load_dotenv
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from tools.utils import format_date_for_display, call_claude, translate_to_chinese_claude
+from tools.resolve_sources import upgrade_to_primary_sources
 from tools.news_filters import (
     curate,
     news_link,
@@ -456,6 +457,7 @@ def generate_ai_doc(
     require_source: bool = True,
     min_signal: int = 3,
     funding_passes: list = None,
+    require_primary_source: bool = True,
 ):
     load_dotenv(override=True)
 
@@ -480,8 +482,13 @@ def generate_ai_doc(
     # Order matters: funding first, then AI relevance, then signal. A funding
     # round is removed for being a funding round, not for scoring low, so the
     # console tally names the reason a reader would give.
+    # Aggregator-linked items get one chance to be upgraded to the subject's own
+    # announcement before the filter below drops them for not having one.
+    if require_primary_source:
+        articles = upgrade_to_primary_sources(articles)
     articles, off_topic = filter_news_section(
-        articles, no_funding=no_funding, min_signal=min_signal)
+        articles, no_funding=no_funding, min_signal=min_signal,
+        require_primary_source=require_primary_source)
 
     if max_articles:
         articles = articles[:max_articles]
@@ -581,6 +588,11 @@ def main():
                         help="Drop news items below this relevance score (1-5, "
                              "assigned during summarization). Default 3, which "
                              "cuts filler; pass 1 to keep everything.")
+    parser.add_argument("--allow-aggregator-source", dest="require_primary_source",
+                        action="store_false",
+                        help="Keep news items whose only link is an aggregator. "
+                             "By default they are dropped: the report links to "
+                             "the announcement, not to a writeup of it.")
     parser.add_argument("--funding-passes", default=None, metavar="KEYS",
                         help="Comma-separated funding source passes to run "
                              "(%s). Each is one web search per day, so all of "
@@ -610,6 +622,7 @@ def main():
         args.require_source,
         args.min_signal,
         [k for k in (args.funding_passes or "").split(",") if k.strip()] or None,
+        args.require_primary_source,
     )
 
 
