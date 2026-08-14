@@ -40,6 +40,7 @@ Escape hatches: `--include-frontier`, `--include-opinion` and `--allow-unlinked`
 3. `tools/news_filters.py` - the four editorial rules above (frontier labs, opinion/statements, dedup, source links). Imported by every other tool here; run it directly (`python tools/news_filters.py`) for its self-tests
 4. `tools/dedup_articles.py` - merge collector output into one deduplicated file
 5. `tools/resolve_sources.py` - find and verify the published article behind a link-less post
+   - Self-tests for the funding consolidation live in the document generator: `python tools/generate_word_doc.py --self-test`
 6. `tools/summarize_articles.py` - Fetch full content and generate summaries via Claude
 7. `tools/generate_word_doc.py` - Word document generation with translation and funding section
 8. `tools/generate_ai_doc.py` - the AI news doc the webapp builds (same rules, different layout)
@@ -151,10 +152,22 @@ Escape hatches: `--include-frontier`, `--include-opinion` and `--allow-unlinked`
      - Articles grouped by category, sorted by relevance (highest first) within each group
      - Filter low-signal noise: `--min-signal 3` drops relevance 1-2 articles
    - **Section 2 — AI Fundraising News table** (8 columns):
-     - Columns: Date | Company | 优先级 | Summary | Stage | Raise | Valuation | Investors
+     - Columns: Date | Company | 优先级 | 概述 (+ source links) | Stage | Raise | Valuation | Investors
      - **Primary source**: Claude extracts structured funding events from collected posts
-     - **Supplemental source**: Claude with the server-side `web_search` tool fills gaps, one search turn per day in the range (skipped entirely if `ANTHROPIC_API_KEY` is unset)
-     - Two sources are merged and deduplicated by company name (richer entry wins)
+     - **Supplemental source**: Claude with the server-side `web_search` tool, **one search turn per day in the range** so the announcement date is exact (skipped entirely if `ANTHROPIC_API_KEY` is unset)
+     - **The search works to a brief** (`_search_funding_single_day` in `generate_word_doc.py`):
+       - Searches TechCrunch, Reuters, Bloomberg, Fortune, VentureBeat, Crunchbase News, Sifted, Axios Pro, The Information and company press releases/blogs
+       - Includes a round only if it was **first publicly announced** on that date — not the publication date of a recap or later coverage
+       - Excludes rounds from other dates, recaps of earlier rounds, unicorn lists, funding roundups, market/trend pieces, rumours and unconfirmed reports. **A day with nothing returns nothing** — substituting a nearby date silently widens the report's range
+       - Verifies against two reputable sources where they exist and lists every URL used; conflicts go in `discrepancy` rather than being resolved silently
+       - `"Not disclosed"` is the convention for anything no source states — **and only that**. Without the second half of that instruction the model marked stage and lead investor unknown on rounds whose own source named both
+       - Chinese summaries: 2-3 sentences, professional, with varied openings (product, technology, market, the round, use of funds) instead of "这是一家…"
+     - **Rendering**: source links appear under each Chinese summary as `来源 [1] techcrunch.com · [2] reuters.com`; conflicts between sources print in a named list under the table
+     - **Consolidation** merges reports of the same round — see the self-test below, because this is where the subtle bugs live:
+       - The entry keeps the **earliest** announcement date. A recap two days later is not a new announcement, and letting its date win because its article happened to name the valuation files the round under the wrong day
+       - Fields are filled from whichever copy discloses them, not taken wholesale from the richer one — two outlets rarely disclose the same subset
+       - Two entries merge only if they **look like the same round**: agreement on stage or amount settles it; failing both, entries within three days are treated as one round. Company name alone is not enough — a seed in March and a Series B in August are one company and two events
+       - Run `python tools/generate_word_doc.py --self-test` to check all of this
    - Output: `output/AI_News_20260706_20260720.docx`
    - Estimated cost: a few dollars per run — the funding web search is the expensive part (one multi-search turn per day in the range, plus $10 per 1,000 searches)
 
@@ -272,7 +285,17 @@ cat .tmp/summarized_articles.json | jq '.[0]'
 
 ## Lessons Learned
 
-### 2026-08-13 Update — first live run end to end (current)
+### 2026-08-13 Update — the funding search now works to a brief (current)
+- **The funding section is written to a specification, not a topic.** It used to ask for "events announced on DATE" and take what came back; it now filters on the **first public announcement date**, names the publications to search, excludes recaps/roundups/unicorn lists/rumours, requires two-source verification, and returns an empty day rather than reaching for a nearby one. The per-day loop is what makes the date exact.
+- **"Not disclosed" needed a second half.** Told only that undisclosed details should read "Not disclosed", the model used it for anything it hadn't bothered to extract — stage and lead investor came back unknown on rounds whose own source named both. Adding *"'Not disclosed' means no source states it — not that you did not look"* turned Lovable from two blanks into `Series C` / `Menlo Ventures (lead)`.
+- **Three consolidation bugs, all found by feeding the merge realistic inputs rather than reading it.** Each one is now a self-test (`--self-test`):
+  - A recap moved the round's date. The richer copy won wholesale, so a fuller article published two days later carried its own date in — filing the round under the day it was recapped. The consolidated date is now always the earliest.
+  - Details disclosed only by the losing copy were discarded. Fields are filled individually now.
+  - **Two different rounds for one company merged into one.** Consolidation keyed on company name alone, so a seed in March and a Series B in August collapsed into a single entry showing the seed — a round deleted and the survivor mislabelled. Entries must now agree on stage or amount, or fall within three days of each other.
+- **Web search is not reproducible.** The same date searched twice returned four events, then two. Nothing is wrong; it means the funding table legitimately differs between reruns of one range, and a missing round is worth re-running before it is worth debugging.
+- **Verified live** on 2026-08-11/12: varied Chinese openings, English columns, up to five sources per round, and a genuine conflict surfaced — a PR Newswire dateline of Aug 10 against reprints dated Aug 11, which is exactly the recap-versus-announcement trap the brief targets.
+
+### 2026-08-13 Update — first live run end to end
 
 Run: 2026-07-30 → 2026-08-13. 75 posts collected, 33 in the report. Measured phase times, all with `NEWS_MAX_WORKERS=6`:
 
